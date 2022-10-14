@@ -1012,21 +1012,26 @@ function _insertCallStack( cs, includeUpScope )
 	end
 end
 
-function _evaluate( postfix, prgmState )
+function _evaluate( postfix, prgmState, i )
 	local stack = {}
 	local env = prgmState.callStack[#prgmState.callStack]
-
-	for i=1,#postfix do
+	local i = i or 1
+	
+	while i <=#postfix do
 		local step = postfix[i]
 		if step.op == "var" then
 			table.insert( stack, env.get(step.val) )
-		elseif op == "-" then
-
-		elseif op == "=" then --copy ref/assign
+		elseif step.op == "-" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			if a.type:sub(1,3) == "vec" or b.type:sub(1,3) then
+		elseif step.op == "=" then --copy ref/assign
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			a.val = b.val
 		end
+
+		i = i+1
 	end
 	
 	return table.unpack( stack )
@@ -1058,7 +1063,7 @@ function _doStep( inputs, prgmState )
 		return stepIndex + 1
 
 	elseif step.op == "EVAL" then
-		_evaluate( step.postfix, prgmState )
+		local done = _evaluate( step.postfix, prgmState )
 		
 	elseif step.op == "SCOPE_UP" then
 		_insertCallStack( callStack, true )
@@ -1067,7 +1072,7 @@ function _doStep( inputs, prgmState )
 		table.remove( callStack ) --pop
 
 	elseif step.op == "IF" then
-		local val = _evaluate( step.postfix, prgmState )
+		local done, val = _evaluate( step.postfix, prgmState )
 		local truthy = _truthy( val )
 		step.ran = truthy --used by else/elseif
 		local nextStep = steps[step.skip]
@@ -1083,13 +1088,13 @@ function _doStep( inputs, prgmState )
 		end
 
 	elseif step.op == "FOR" then
-		local init = _evaluate( step.init, prgmState )
+		local done, init = _evaluate( step.init, prgmState )
 		local nx = prgmState.stepIndex + 1
 
 		callStack.onEndBlock = function()
 			local test = _evalInstr( step.test, prgmState )
 			if _truthy( test ) then
-				_evaluate( step.inc, prgmState ) --@ end of block
+				local done = _evaluate( step.inc, prgmState ) --@ end of block
 				return nx
 			else
 				return step.skip
