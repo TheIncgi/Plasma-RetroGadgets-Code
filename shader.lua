@@ -1,3 +1,7 @@
+--Author: TheIncgi
+--Oct 2022
+--Plasma Demo
+
 local vert = [[
 	in vec3 pos;
 	in mat4 transform;
@@ -73,17 +77,16 @@ local linalg = {}
 
 -- functions added here are available to the compiled shader
 local function _makeGlobals()
-	local g = {
-		sync = {}, --returns value instantly
-		async = {}, --returns true/false, value, uses yielding
-	}
+	local g = {}
 	for name, val in pairs( math ) do
 		if type(val) == "function" then
-			g.sync[ name ] = val
+			g[ name ] = function(...)
+				return true, val(...)
+			end
 		end
 	end
-	g.sync.read_var = g.read_var
-	g.sync.read = g.read_var   --alias
+	g.read_var = function(...) return true, read_var(...) end
+	
 	
 	--TODO hsv rgb conversion
 	--TODO wrap some math functions to work on vectors
@@ -97,17 +100,17 @@ end
 -- pcall in evaluation 
 
 function linalg._emptyMatrix( rows, cols )
-	return {type="mat"..size, rows=rows, cols=cols}
+	return {type="mat"..rows.."_"..cols, rows=rows, cols=cols, val = {{}}}
 end
 function linalg._emptyVector( size )
-	return {type="vec"..size, size=size}
+	return {type="vec"..size, size=size, val = {}}
 end
 function linalg.newMatrix( rows, cols )
 	local out = linalg._emptyMatrix( rows, cols )
 	for r=1,rows do
-		out[r]={}
+		out.val[r]={}
 		for c=1, cols do
-			out[r][c] = 0
+			out.val[r][c] = 0
 		end
 	end
 	
@@ -117,16 +120,55 @@ end
 function linalg.newVector( size )
 	local out = linalg._emptyVector( size )
 	for i=1,size do
-		out[i] = 0
+		out.val[i] = 0
 	end
 end
 
 function linalg.identity( matrix )
 	for r = 1, matrix.rows do
 		for c = 1, matrix.cols do
-			matrix[r][c] = r==c and 1 or 0
+			matrix.val[r][c] = r==c and 1 or 0
 		end
 	end
+end
+
+function linalg.subMat( x, y )
+	if not (x.type:sub(1,3)=="mat" or y.type:sub(1,3)=="mat") then
+		error("Compiler issue: at least one arg must be matrix",2)
+	end
+	
+	local out = linalg._emptyMatrix( x.rows or y.rows, x.cols or y.cols )
+	for r=1, out.rows do
+		out[r] = {}
+		for c=1, out.cols do
+			local a = x.type:sub(1,3) == "mat" and x.val[r][c] or x.val
+			local b = y.type:sub(1,3) == "mat" and y.val[r][c] or y.val
+			out.val[r][c] = a-b
+		end
+	end
+	return out
+end
+
+function linalg.addMat( x, y )
+	return linalg.subMat(x, -y)
+end
+
+function linalg.subVec( x, y )
+	if not (x.type:sub(1,3)=="vec" or y.type:sub(1,3)=="vec") then
+		error("Compiler issue: at least one arg must be matrix",2)
+	end
+
+	out = linalg._emptyVector( x.size or y.size )
+	for i=1,out.size do
+		local a = x.type:sub(1,3) == "vec" and x.val[i] or x.val
+		local b = y.type:sub(1,3) == "vec" and y.val[i] or y.val
+		out.val[i] = a - b
+	end
+	return out
+end
+
+function linalg.addVec( x, y )
+	return linalg.subVec( x, -y )
 end
 
 function linalg.matrixMult( matA, matB )
@@ -140,9 +182,9 @@ function linalg.matrixMult( matA, matB )
 		for c = 1, matB.cols do
 			local sum = 0
 			for i = 1, #matA.size do
-				sum = sum + matA[r][i] * matB[i][c]
+				sum = sum + matA.val[r][i] * matB.val[i][c]
 			end
-			out[r][c] = 0
+			out.val[r][c] = 0
 		end
 	end
 	return out
@@ -151,16 +193,55 @@ end
 function linalg.magnitude( vec )
 	local sum = 0
 	for i=1,vec.size do
-		sum = sum + vec[i] * vec[i]
+		sum = sum + vec.val[i] * vec.val[i]
 	end
 	return math.sqrt( sum )
 end
 
 function linalg.normalize( vec )
 	local m = linalg.magnitude( vec )
-	local out = {}
+	local out = linalg._emptyVector( vec.size )
 	for i = 1, vec.size do
-		vec[i] = vec[i] / m
+		out.val[i] = vec.val[i] / m
+	end
+	return out
+end
+
+function linalg.dot( a, b )
+	if a.size ~= b.size then
+		error("vector size mismatch")
+	end
+	a = linalg.normalize(a)
+	b = linalg.normalize(b)
+
+	local sum = 0
+	for i = 1, a.size do
+		sum = sum + a.val[i] * b.val[i]
+	end
+	return {type="num", val=sum}
+end
+
+-- x  y  z  x  y
+-- a  b  c  a  b
+-- d  e  f  d  e
+--
+-- x = bf - ce
+function linalg.cross( a, b )
+	if a.size ~= b.size then
+		error("vector size mismatch")
+	end
+	a = linalg.normalize(a)
+	b = linalg.normalize(b)
+
+	local s = a.size
+	local out = linalg._emptyVector( s )
+
+	for i = 1, s do
+		local p1 = i % s + 1  --+1, wrapped
+		local p2 = p1 % s +1  --+2 wrapped
+		local m1 = (i+s-2) % s + 1 -- -1 wrapped (by adding)
+		local m2 = (m1+s-2) % s + 1 -- -2 wrapped (by adding)
+		out[i] = a[p1] * b[p2] - a[m1] * b[m2]
 	end
 	return out
 end
@@ -174,10 +255,10 @@ end
 	local S = math.sin( amount )
 	local U = 1 - C
 	local mat = linalg._emptyMatrix( 4, 4 )
-	mat[1] = { U * a.X       + C,          U * a.x * a.y - S * a.z,   U * a.x * a.z + S * a.y,   0 }
-	mat[2] = { U * a.x * a.y + S * a.z,    U * a.Y       + C      ,   U * a.y * a.z - S * a.x,   0 }
-	mat[3] = { U * a.x * a.z - S * a.y,    U * a.y * a.z + S * a.x,   U * a.Z       + C      ,   0 }
-	mat[4] = {                        0,                          0,                        0,   1 }
+	mat.val[1] = { U * a.X       + C,          U * a.x * a.y - S * a.z,   U * a.x * a.z + S * a.y,   0 }
+	mat.val[2] = { U * a.x * a.y + S * a.z,    U * a.Y       + C      ,   U * a.y * a.z - S * a.x,   0 }
+	mat.val[3] = { U * a.x * a.z - S * a.y,    U * a.y * a.z + S * a.x,   U * a.Z       + C      ,   0 }
+	mat.val[4] = {                        0,                          0,                        0,   1 }
 	
 	return mat
 end
@@ -188,7 +269,7 @@ function linalg.transform( mat, offset )
 	end
 	local out = linalg.copyMatrix( mat )
 	for i=1,mat.rows do
-		out[i][mat.cols] = mat[i][mat.cols] + offset[i]
+		out.val[i][mat.cols] = mat.val[i][mat.cols] + offset.val[i]
 	end
 	return out
 end
@@ -198,9 +279,9 @@ function linalg.transpose( mat )
 	for r=1, mat.rows do
 		for c=1, mat.cols do
 			if c > r then
-				local t = mat[r][c]
-				mat[r][c] = mat[c][r]
-				mat[c][r] = t
+				local t = mat.val[r][c]
+				mat.val[r][c] = mat.val[c][r]
+				mat.val[c][r] = t
 			end
 		end
 	end
@@ -218,34 +299,50 @@ function linalg.scaleMatrix( matrix, scaleVec )
 	end
 	local out = linalg.copyMatrix( matrix )
 	for i=1,m do
-		out[i][i] = matrix[i][i] * scaleVec[i]
+		out.val[i][i] = matrix.val[i][i] * scaleVec.val[i]
 	end
 	return
+end
+
+function linalg.scaleVec( vec, scale )
+	local out = linalg.newVector( vec.size )
+	for i=1,out.size do
+		out.val[i] = vec[i] * scale
+	end
+	return out
 end
 
 function linalg.vecToCol( vec )
 	local out = linalg._emptyMatrix( vec.size, 1 );
 	for i = 1, vec.size do
-		out[i] = {vec[i]}
+		out.val[i] = {vec.val[i]}
 	end
 	return out
 end
 function linalg.vecToRow( vec )
 	local out = linalg._emptyMatrix( vec.size, 1 );
-	out[1] = {}
+
 	for i = 1, vec.size do
-		out[1][i] = {vec[i]}
+		out.val[1][i] = vec.val[i]
 	end
 	return out
 end
 
 function linalg.copyMatrix( from, to )
-	to = to or linalg.newMatrix( from.rows, from.cols )
+	to = to or linalg._emptyMatrix( from.rows, from.cols )
 	for r=1, from.rows do
-		to[r] = {}
+		to.val[r] = {}
 		for c=1, from.cols do
-			to[r][c] = from[r][c]
+			to.val[r][c] = from.val[r][c]
 		end
+	end
+	return to
+end
+
+function linalg.copyVector( from, to )
+	to = to or linalg._emptyVector( from.size )
+	for i = 1, from.size do
+		to.val[i] = from.val[i]
 	end
 	return to
 end
@@ -253,7 +350,7 @@ end
 function linalg.colToVec( matrix, col )
 	local out = linalg.newVector( matrix.rows )
 	for i = 1, matrix.rows do
-		out[i] = matrix[i][col]
+		out.val[i] = matrix.val[i][col]
 	end
 	return out
 end
@@ -261,7 +358,7 @@ end
 function linalg.rowToVec( matrix, row )
 	local out = linalg.newVector( matrix.cols )
 	for i = 1, matrix.cols do
-		out[i] = matrix[row][i]
+		out.val[i] = matrix.val[row][i]
 	end
 	return out
 end
@@ -291,10 +388,10 @@ function linalg.toString( val )
 	local t = val.type
 
 	if t == "vector" then
-		local vec = val
+		local vec = val.val
 		v = ("<%d, %d, %d, %d>"):format( table.unpack(vec) )
 	elseif t == "matrix" then
-		local mat = val
+		local mat = val.val
 		v = {"\n"}
 		for i,row in ipairs( mat ) do
 			for j,val in ipairs( row ) do
@@ -340,7 +437,7 @@ local patterns = {
 		bin="^0b[01]+$"
 	},
 	var = { "^[a-zA-Z_][a-zA-Z0-9_]*$" },
-	op = { "^[()%{%}%[%]%%.%!%#%^%*%/%+%-%=%~%&|;,]+$" }
+	op = { "^[()%{%}%[%]%%.%!%#%^%*%/%+%-%=%~%&|;,%<%>]+$" }
 }
 
 
@@ -384,6 +481,10 @@ local ops = {
 	["=="] = 4,
 	["!="] = 4,
 	["~="] = 4,
+	["<"] = 4,
+	[">"] = 4,
+	[">="] = 4,
+	["<="] = 4,
 	--logic
 	["&&"] = 3,
 	["||"] = 3,
@@ -552,13 +653,14 @@ function _evalInstr( state, first, last, i, out, stack )
 		if chunkType1 == "var" then
 			if ("([{"):find(t2,1,true) then --call
 				table.insert( stack, {
-					op="call",
+					op="CALL",
 					val=t1, 
 					openWith=t2, 
 					closeWith=_closePar(t2),
 					lvl = ops[t2]
 				})
 				i = i+1 --another +1 at bottom of loop
+				table.insert( out, {op="CALL_END"})
 			else --var
 				table.insert( out, {op="var", val=t1} )
 			end
@@ -579,7 +681,7 @@ function _evalInstr( state, first, last, i, out, stack )
 				-- pop.closeWith = nil --hide, not needed anymore
 				table.insert( out, pop )	
 			end
-			if stack[#stack].op=="call" then
+			if stack[#stack].op=="CALL" then
 				table.insert( out, table.remove( stack ) ) --move call
 			else
 				table.remove( table(stack) ) --don't need )
@@ -606,7 +708,7 @@ function _evalInstr( state, first, last, i, out, stack )
 			table.insert( out, {op="negate"}) --no lvl needed, comparison only against stack
 
 		elseif t1 == "," then
-			while #stack > 0 and stack[#stack].op~="call" do
+			while #stack > 0 and stack[#stack].op~="CALL" do
 				local pop = table.remove( stack )
 				if pop.closeWith then
 					cerr( state.lineNums[first], "Missing "..pop.closeWith )
@@ -685,7 +787,7 @@ function _buildInstructions( state, index )
 
 		if t1 == "{" then
 			state.scope = state.scope+1
-			table.insert( inst, {op="SCOPE_UP"})
+			table.insert( inst, {op="SCOPE_UP",line=lineNum})
 			index = i2
 
 		elseif t1 == "in" then
@@ -833,6 +935,7 @@ function _buildInstructions( state, index )
 				if eval then
 					eval.op = "RETURN"
 					eval.stepIndex = #inst+1
+					eval.line = lineNum
 					table.insert( inst, eval )
 					index = lastToken + 1
 				end --else needs more itteration
@@ -852,6 +955,7 @@ function _buildInstructions( state, index )
 					if eval then
 						eval.op = t1:upper()
 						eval.stepIndex = #inst+1
+						eval.line = lineNum
 						table.insert( inst, eval )
 						ctrlStack[ state.scope+1 ] = eval --when scope ends, set skip point
 						index = state._at + 1
@@ -907,7 +1011,7 @@ function _buildInstructions( state, index )
 			if state.scope < 1 then
 				cerr(lineNum,"too many }");
 			end
-			table.insert( inst, {op="SCOPE_DOWN"})
+			table.insert( inst, {op="SCOPE_DOWN", line=lineNum})
 			if state.scope == 1 then
 				state.inFunc = false
 				inst = state.instructions
@@ -922,6 +1026,7 @@ function _buildInstructions( state, index )
 			local eval,lastToken = _evalInstr( state, index )
 			if eval then
 				eval.stepIndex = #inst+1
+				eval.line = lineNum
 				table.insert( inst, eval )
 				index = lastToken + 1
 			end --else needs more itteration
@@ -1002,21 +1107,35 @@ function _insertCallStack( cs, includeUpScope )
 		parent = cs[#cs],
 		onEndBlock = false
 	}
+	if not includeUpScope then
+		new.stepIndex = 1
+	end
 	--checks self
 	--optionally checks parent
 	--checks global
 	new.get = function( x )
 		return vars[x] 
-		  or (includeUpScope and new.parent and new.parent.x)
+		  or (includeUpScope and new.parent and new.parent.get( x ))
 		  or global[x]
+	end
+	new.getStepIndex = function()
+		return new.stepIndex or new.parent and new.parent.getStepIndex()
+	end
+	new.setStepIndex = function( i )
+		if new.stepIndex then
+			new.stepIndex = i
+		else
+			new.parent.setStepIndex( i )
+		end
 	end
 end
 
-function _evaluate( postfix, prgmState, i )
-	local stack = {}
+function _evaluate( postfix, prgmState, i, stack, callMarkers )
+	stack = stack or {}
+	callMarkers = callMarkers or {}
 	local env = prgmState.callStack[#prgmState.callStack]
 	local i = i or 1
-	
+	local lineNum = prgmState.inst[ env.getStepIndex() ].line
 	while i <=#postfix do
 		local step = postfix[i]
 		if step.op == "var" then
@@ -1024,11 +1143,176 @@ function _evaluate( postfix, prgmState, i )
 		elseif step.op == "-" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			if a.type:sub(1,3) == "vec" or b.type:sub(1,3) then
+			local c;
+			if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
+				c = linalg.subVec(a, b)
+			elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+				c = linalg.subMat( a, b )
+			elseif a.type=="num" and b.type=="num" then
+				c = {type="num", val=b.val-a.val}
+			else
+				rerr(lineNum, ("%s - %s not implemented"))
+			end
+			table.insert( stack, c )
+		elseif step.op == "+" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
+				c = linalg.addVec(a, b)
+			elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+				c = linalg.addMat( a, b )
+			elseif a.type=="num" and b.type=="num" then
+				c = {type="num", val=b.val + a.val}
+			else
+				rerr(lineNum, ("%s + %s not implemented"))
+			end
+			table.insert( stack, c )
+		elseif step.op == "*" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			if a.type:sub(1,3) == "vec" and b.type:sub(1,3)=="vec" then
+				c = linalg.dot(a, b)
+			elseif a.type:sub(1,3) == "vec" and b.type == "num" then
+				c = linalg.scaleVec( a, b )
+			elseif a.type == "num" and b.type:sub(1,3) == "vec" then
+				c = linalg.scaleVec( b, a )
+			elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+				if a.type=="num" then 
+					c = linalg.scaleMatrix( a, b )
+				elseif b.type =="num" then
+					c = linalg.scaleMatrix( b, a )
+				elseif a.type(1,3) == "mat" and b.type:sub(1,3) == "mat" then
+					c = linalg.matrixMult( a, b )
+				else
+					rerr(lineNum, "can't multiply "..a.type.." with "..b.type)
+				end
+			elseif a.type=="num" and b.type=="num" then
+				c = {type="num", val=b.val * a.val}
+			else
+				rerr(lineNum, ("%s * %s not implemented"))
+			end
+			table.insert( stack, c )
+		elseif step.op == "**" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			if a.type:sub(1,3) == "vec" and b.type:sub(1,3) == "vec" then
+				c = linalg.cross( a, b )
+			else
+				rerr(lineNum, "cant do cross product on "..a.type.." and "..b.type)
+			end
+			table.insert( stack, c )
+		elseif step.op == "/" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+		elseif step.op == "==" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+		elseif step.op == "~=" or step.op == "!=" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+		elseif step.op == ">" then 
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+		elseif step.op == "<" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+		elseif step.op == ">=" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+		elseif step.op == "<=" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			local c;
+			error"not implemented"
+			
 		elseif step.op == "=" then --copy ref/assign
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			a.val = b.val
+		elseif step.op == "+=" then
+			local b = table.remove( stack )
+			local a = stack[#stack]
+			error"not implemented"
+		elseif step.op == "-=" then
+			local b = table.remove( stack )
+			local a = stack[#stack]
+			error"not implemented"
+		elseif step.op == "/=" then
+			local b = table.remove( stack )
+			local a = stack[#stack]
+			error"not implemented"
+		elseif step.op == "*=" then
+			local b = table.remove( stack )
+			local a = stack[#stack]
+			error"not implemented"
+		elseif step.op == "." then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			error"not implemented"
+		elseif step.op == "CALL_END" then
+			table.insert(callMarkers, #stack+1) --last arg of function call
+		elseif step.op == "CALL" then
+			local mark = table.remove( callMarkers )
+			if not mark then
+				rerr( lineNum, "Compiler issue: missing end of call args op")
+			end
+			local args = {}
+			local fName = step.val
+			while #stack >= mark do
+				table.insert( args, table.remove( stack ))
+			end
+			
+			--actual call
+			if --TODO, state handle continuing async call
+			--without firing again 
+			local done, c = env.get( fName )( table.unpack(args) )
+			if not done then
+				
+			end
+			if not c.type then
+				local t;
+				if type(c) == "number" then
+					t = "num"
+				elseif type(c)=="string" then
+					t = "str"
+				elseif type(c)=="boolean" then
+					t = "bool"
+				else
+					error("Function err: missing type tag from call result on line "..lineNum.."for type "..type(c))
+				end
+				c = {type=t,val=c}
+			end
+			table.insert( stack, c )
+
+			error"not implemented"
+		elseif step.op == "&&" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			error"not implemented"
+		elseif step.op == "||" then
+			local b = table.remove( stack )
+			local a = table.remove( stack )
+			error"not implemented"
+		else
+			error"not implemented"
 		end
 
 		i = i+1
@@ -1040,7 +1324,7 @@ end
 function _doStep( inputs, prgmState )
 	--DECLARE, INPUT, EVAL, IF, FOR, WHILE, RETURN, BREAK, CONTINUE
 	local steps = prgmState.inst
-	local stepIndex = prgmState.stepIndex
+	local stepIndex = prgmState.callStack[ #prgmState.callStack ].getStepIndex()
 	local step = steps[ stepIndex ]
 	local callStack = prgmState.callStack[ prgmState.lvl ]
 	local globals = prgmState.callStack[1].vars
@@ -1051,6 +1335,16 @@ function _doStep( inputs, prgmState )
 			rerr( step.line, "var "..step.name.." is already defined in this scope")
 		else
 			vars[ step.name ] = {type=step.type, name=step.name} --val=nil
+			local v = vars[step.name]
+			local t = v.type:sub(1,3)
+			if t == "vec" then
+				v.size = tonumber( v.type:sub(4) )
+			elseif t == "mat" then
+				v.rows = tonumber(v.type:match"^mat([0-9]+)")
+				v.cols = tonumber(v.type:match"_([0-9]+)$")
+			elseif t == "tex" then
+
+			end
 		end
 		return stepIndex + 1
 
@@ -1059,7 +1353,23 @@ function _doStep( inputs, prgmState )
 			rerr( step.line, "var "..step.name.." wasn't declared yet");
 		end
 		local ty = globals[ step.name ].type
-		vars[ step.name ].val = _typeCheck( inputs[ step.name ], ty, step.name, step.line )
+		local v = vars[ step.name ]
+		v.val = _typeCheck( inputs[ step.name ], ty, step.name, step.line )
+		v.val.type = nil --only used while inputing, type stored in v
+		if ty:sub(1,3) == "vec" then
+			v.size = #v.val
+			if v.size ~= tonumber( ty:match("[0-9]+$") ) then
+				rerr( step.line, "incorrect vector size used for input")
+			end
+		elseif ty:sub(1,3)=="mat" then
+			v.rows = #v.val
+			v.cols = #v.val[1]
+			if v.rows ~= tonumber(ty:match"^mat([0-9])+_") or
+			v.cols ~= tonumber(ty:match"([0-9]+)$") then
+				rerr( step.line, "incorrect matrix size used for input")
+			end
+		end
+		
 		return stepIndex + 1
 
 	elseif step.op == "EVAL" then
@@ -1131,7 +1441,7 @@ function _doStep( inputs, prgmState )
 		return nxt
 
 	elseif step.op == "WHILE" then
-		local val = _evaluate( step.postix )
+		local val = _evaluate( step.postix, prgmState )
 		local truthy = _truthy( val )
 		
 		if truthy then
@@ -1141,6 +1451,9 @@ function _doStep( inputs, prgmState )
 		end
 
 	elseif step.op == "RETURN" then
+		prgmState.RETURN_VAL = _evaluate( step.postfix, prgmState )
+		table.remove( callStack ) --pop
+		return 
 
 	elseif step.op == "BREAK" then
 		local loopInst = step.loopInst
@@ -1161,39 +1474,99 @@ function _doStep( inputs, prgmState )
 	return stepIndex + 1
 end
 
+function _copyVar( var )
+	if var.type:sub(1,3) == "mat" then
+		return linalg.copyMatrix( var )
+	elseif var.type:sub(1,3) == "vec" then
+		return linalg.copyVector( var )
+	end
+	
+	local copy = {type = var.type}
+	return copy
+end
+
+function _loadFunctions( prgmName,prgmState )
+	local prgm = programs[prgmName]
+	local cs = prgmState.callStack[1]
+	local stepIndex = prgmState.callStack[#prgmState.callStack].getStepIndex()
+	local lineNum = prgmState.inst[stepIndex].line
+
+	for name,data in pairs( prgm.functions )do
+		cs.vars[name] = function( ... )
+			local args = {...}
+			local inst = data.instructions
+			local params = data.params
+			_insertCallStack( prgmState.callStack, false )
+			prgmState.inst = prgm.functions[ name ].instructions
+			local thisLvl = #prgmState.callStack
+			fstack = prgmState.callStack[ thisLvl ]
+
+			--add params to block
+			for i=1, #params do
+				local ptype = params[i].type
+				local pname = params[i].name
+				if ptype ~= args[i].type then
+					rerr(lineNum, "arg "..i.." expected "..ptype..", got "..args[i.type])
+				end
+
+				--mat/vec are by ref
+				if type(args[i].val) ~= "table" then
+					fstack.vars[ pname ] = _copyVar(args[i])
+				else
+					fstack.vars[ pname ] = args[i]
+				end
+			end
+
+			-- let main loop catch the changes
+
+		end
+	end
+end
+
 --only prgm and locals are expected to be passed in
 function _run( prgmName, main, inputs, prgmState )
 	local prgm = programs[ prgmName ]
 	prgmState = prgmState or {
 		init = false,
 		inst = prgm.instructions,
-		stepIndex = 1, --execution point
+		prgm = prgm,
+		inputs = inputs,
 		callStack = {
-			{vars=_makeGlobals(), onEndBlock = false}
+			{vars=_makeGlobals(), onEndBlock = false, stepIndex = 1}
 		}, --{name="",vars={},loopInfo={}?}
 		lvl = 1
 	}
-	if not prgmState.callStack[1].get then
-		prgmState.callStack[1].get = function(x)
+	local cs = prgmState.callStack
+
+	_loadFunctions(prgmName, prgmState)
+
+	if not cs[1].get then
+		cs[1].get = function(x)
 			return prgmState.callStack[1].vars[ x ]
+		end
+		cs[1].getStepIndex = function()
+			return cs[1].stepIndex
+		end
+		cs[1].setStepIndex = function( i )
+			cs[1].stepIndex = i
 		end
 	end	
 	--init steps
 	if not prgmState.init then
-		while prgmState.inst[ prgmState.stepIndex ] do
-			prgmState.stepIndex = _doStep( inputs, prgmState )
+		while prgmState.inst[ cs[#cs].getStepIndex() ] do
+			cs[#cs].setStepIndex( _doStep( inputs, prgmState ) )
 			if autoYield( _run, prgmName, inputs, prgmState ) then return false end
 		end
 		prgmState.init = true
 		prgmState.inst = prgm.functions[ main ].instructions
-		prgmState.stepIndex = 1
+		cs[1].setStepIndex( 1 )
 		prgmState.func = main
 	end
 
 	--main call
 	if prgmState.init then
-		while prgmState.inst[ prgmState.stepIndex ] do
-			prgmState.stepIndex = _doStep( inputs, prgmState )
+		while prgmState.inst[ cs[#cs].getStepIndex() ] do
+			cs[#cs].setStepIndex( _doStep( inputs, prgmState ) )
 			if autoYield( _run, prgmName, inputs, prgmState ) then return false end
 		end
 	end
@@ -1231,7 +1604,7 @@ repeat
 until #unfinished == 0
 
 --simulate command
-_run( "frag1", "frag", {
+_run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
 	color = { 1, 0, 0,type="vec3"}, --red
 	lightPos = {0, 100, 0,type="vec3"},
 	camPos = {0, 10, 0,type="vec3"},
