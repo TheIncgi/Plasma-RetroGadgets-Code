@@ -2,6 +2,7 @@
 --Oct 2022
 --Plasma Demo
 
+--test code
 local vert = [[
 	in vec3 pos;
 	in mat4 transform;
@@ -81,7 +82,18 @@ local function _makeGlobals()
 	for name, val in pairs( math ) do
 		if type(val) == "function" then
 			g[ name ] = function(...)
-				return true, val(...)
+				local args = {...}
+				for i=1, #args do
+					args[i] = args[i].val
+				end
+				
+				local returns = {val(table.unpack(args))}
+				for i=1, #returns do
+					if type( returns[i] ) ~= "table" or not returns[i].type then
+						returns[i] = _wrapVal( returns[i] )
+					end
+				end
+				return true, table.unpack( returns )
 			end
 		end
 	end
@@ -305,9 +317,29 @@ function linalg.scaleMatrix( matrix, scaleVec )
 end
 
 function linalg.scaleVec( vec, scale )
-	local out = linalg.newVector( vec.size )
+	local out = linalg._emptyVector( vec.size )
 	for i=1,out.size do
-		out.val[i] = vec[i] * scale
+		out.val[i] = vec.val[i] * scale.val
+	end
+	return out
+end
+
+-- n / vec
+function linalg.vecUnder( vec, over )
+	local out = linalg._emptyVector( vec.size )
+	for i=1, out.size do
+		out.val[i] = over.val / vec.val[i]
+	end
+	return out
+end
+
+-- n  /mat
+function linalg.matUnder( mat, over )
+	local out = linalg._emptyMatrix( vec.size )
+	for r=1, out.rows do
+		for c=1, out.cols do
+			out.val[r][c] = over.val / mat.val[r][c]
+		end
 	end
 	return out
 end
@@ -418,7 +450,8 @@ local types = {
 	["tex4"]=true, --texture, string, but reading produces num/vec2/vec3/vec4
 	["tex3"]=true, --color is in 0-1 space
 	["tex2"]=true,
-	["tex1"]=true
+	["tex1"]=true,
+	["func"]=true  --already in vars space, so why not :)
 }
 for r=2,4 do
 	for c=2,4 do
@@ -698,7 +731,7 @@ function _evalInstr( state, first, last, i, out, stack )
 			if not n then
 				cerr( lineNum )
 			end
-			table.insert( out, {op="val", } )
+			table.insert( out, {op="val", val = _wrapVal( n )  } )
 
 		elseif chunkType1 == "str" then
 			table.insert( out, {op="val", val=t1:sub(2,-2):gsub('\\"','"'):gsub("\\'","'") } )
@@ -1095,6 +1128,35 @@ function _truthy( prgmVal )
 	)
 end
 
+function _wrapVal( val, typeName )
+	if typeName then
+		local v = { val=val, type=typeName }
+		if typeName:sub(1,3) == "vec" then
+			v.size = tonumber( typeName:sub(4) )
+		elseif typeName:sub(1,3) == "mat" then
+			v.rows = tonumber( typeName:match"^mat([0-9]+)" )
+			v.cols = tonumber( typeName:match"_([0-9]+)^" )
+		end
+		return v
+	end
+	local t = "?"
+	if type(val) == "string" then
+		return _wrapVal( val, "str" )
+
+	elseif type(val) == "number" then
+		return _wrapVal( val, "num" )
+
+	elseif type(val) == "function" then
+		return _wrapVal( val, "func" )
+
+	elseif type(val) == "boolean" then
+		return _wrapVal( val, "bool" )
+
+	else
+		error("Missing type wrapper for "..type(val))
+	end
+end
+
 --includeUpScope false on function call
 function _insertCallStack( cs, includeUpScope )
 	local global = cs[1]
@@ -1109,6 +1171,10 @@ function _insertCallStack( cs, includeUpScope )
 	}
 	if not includeUpScope then
 		new.stepIndex = 1
+		--call info is stored in parent because `new` will be popped off stack when done
+		new.parent.callInfo = {
+			returnVals = false
+		}
 	end
 	--checks self
 	--optionally checks parent
@@ -1128,71 +1194,161 @@ function _insertCallStack( cs, includeUpScope )
 			new.parent.setStepIndex( i )
 		end
 	end
+
+	--not needed for global, no return values in global
+	--removed, handled by yield
+	-- new.setCallContinue = function( stuff )
+	-- 	if not new.callInfo then
+	-- 		if not new.parent then
+	-- 			error("Nowhere to set call continue")
+	-- 		end
+	-- 		return new.parent.setCallContinue( stuff )
+	-- 	else
+	-- 		new.callInfo.continue = { stuff }
+	-- 	end
+	-- end
+
+	new.setCallReturn = function( ... )
+		if not new.callInfo then
+			if not new.parent then
+				error("Nowhere to set call return")
+			end
+			return new.parent.setCallReturn( stuff )
+		else
+			new.callInfo.returnVals = { stuff }
+		end
+	end
+
+	--should only be cleared when processing the result in evaluate->call, so the current stack will have the info
+	-- new.clearCallInfo = function()
+	-- 	if not new.callInfo then
+	-- 		if not new.parent then
+	-- 			error("Nowhere to clear call info")
+	-- 		end
+	-- 		return new.parent.clearCallInfo( stuff )
+	-- 	else
+	-- 		new.callInfo = nil
+	-- 	end
+	-- end
 end
 
-function _evaluate( postfix, prgmState, i, stack, callMarkers )
-	stack = stack or {}
-	callMarkers = callMarkers or {}
+local evalOps = {
+	add = function( a, b )
+		local c;
+		if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
+			c = linalg.addVec(a, b)
+		elseif a.type:sub(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+			c = linalg.addMat( a, b )
+		elseif a.type=="num" and b.type=="num" then
+			c = {type="num", val=b.val + a.val}
+		else
+			rerr(lineNum, ("%s + %s not implemented"))
+		end
+		return c
+	end,
+
+	sub = function( a,b )
+		local c;
+		if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
+			c = linalg.subVec(a, b)
+		elseif a.type:sub(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+			c = linalg.subMat( a, b )
+		elseif a.type=="num" and b.type=="num" then
+			c = {type="num", val=b.val-a.val}
+		else
+			rerr(lineNum, ("%s - %s not implemented"))
+		end
+		return c
+	end,
+
+	mult = function( a,b )
+		local c;
+		if a.type:sub(1,3) == "vec" and b.type:sub(1,3)=="vec" then
+			c = linalg.dot(a, b)
+		elseif a.type:sub(1,3) == "vec" and b.type == "num" then
+			c = linalg.scaleVec( a, b )
+		elseif a.type == "num" and b.type:sub(1,3) == "vec" then
+			c = linalg.scaleVec( b, a )
+		elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+			if a.type=="num" then 
+				c = linalg.scaleMatrix( b, a )
+			elseif b.type =="num" then
+				c = linalg.scaleMatrix( a, b )
+			elseif a.type(1,3) == "mat" and b.type:sub(1,3) == "mat" then
+				c = linalg.matrixMult( a, b )
+			else
+				rerr(lineNum, "can't multiply "..a.type.." with "..b.type)
+			end
+		elseif a.type=="num" and b.type=="num" then
+			c = {type="num", val=b.val * a.val}
+		else
+			rerr(lineNum, ("%s * %s not implemented"))
+		end
+		return c
+	end,
+
+	div = function( a,b )
+		local c;
+		if a.type:sub(1,3) == "vec" and b.type == "num" then
+			c = linalg.scaleVec( a, 1/b )
+		elseif a.type == "num" and b.type:sub(1,3) == "vec" then
+			c = linalg.vecUnder( b, a )
+		elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+			if a.type=="num" then 
+				c = linalg.matrixUnder( b, a )
+			elseif b.type =="num" then
+				c = linalg.scaleMatrix( a, 1/b )
+			-- no matrix divide matrix
+			-- elseif a.type(1,3) == "mat" and b.type:sub(1,3) == "mat" then
+			-- 	c = linalg.matrixMult( a, b )
+			else
+				rerr(lineNum, "can't divide "..a.type.." with "..b.type)
+			end
+		elseif a.type=="num" and b.type=="num" then
+			c = {type="num", val=b.val / a.val}
+		else
+			rerr(lineNum, ("%s / %s not implemented"))
+		end
+		return c
+	end,
+
+	eq = function( a, b )
+		error"not implemented"
+	end
+}
+
+function _evaluate( postfix, prgmState, i )
+
 	local env = prgmState.callStack[#prgmState.callStack]
+	env.stack = env.stack or {}
+	env.callMarkers = env.callMarkers or {}
+	local callMarkers = env.callMarkers
+	local stack = env.stack
 	local i = i or 1
 	local lineNum = prgmState.inst[ env.getStepIndex() ].line
 	while i <=#postfix do
 		local step = postfix[i]
 		if step.op == "var" then
 			table.insert( stack, env.get(step.val) )
+		elseif step.op == "val" then
+			table.insert( stack, step.val)
 		elseif step.op == "-" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
-				c = linalg.subVec(a, b)
-			elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
-				c = linalg.subMat( a, b )
-			elseif a.type=="num" and b.type=="num" then
-				c = {type="num", val=b.val-a.val}
-			else
-				rerr(lineNum, ("%s - %s not implemented"))
-			end
+			local c = evalOps.sub( a,b );
+			
 			table.insert( stack, c )
 		elseif step.op == "+" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
-				c = linalg.addVec(a, b)
-			elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
-				c = linalg.addMat( a, b )
-			elseif a.type=="num" and b.type=="num" then
-				c = {type="num", val=b.val + a.val}
-			else
-				rerr(lineNum, ("%s + %s not implemented"))
-			end
+			local c = evalOps.add(a,b)
+			
 			table.insert( stack, c )
 		elseif step.op == "*" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			if a.type:sub(1,3) == "vec" and b.type:sub(1,3)=="vec" then
-				c = linalg.dot(a, b)
-			elseif a.type:sub(1,3) == "vec" and b.type == "num" then
-				c = linalg.scaleVec( a, b )
-			elseif a.type == "num" and b.type:sub(1,3) == "vec" then
-				c = linalg.scaleVec( b, a )
-			elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
-				if a.type=="num" then 
-					c = linalg.scaleMatrix( a, b )
-				elseif b.type =="num" then
-					c = linalg.scaleMatrix( b, a )
-				elseif a.type(1,3) == "mat" and b.type:sub(1,3) == "mat" then
-					c = linalg.matrixMult( a, b )
-				else
-					rerr(lineNum, "can't multiply "..a.type.." with "..b.type)
-				end
-			elseif a.type=="num" and b.type=="num" then
-				c = {type="num", val=b.val * a.val}
-			else
-				rerr(lineNum, ("%s * %s not implemented"))
-			end
+			local c = evalOps.mult( a,b );
+			
 			table.insert( stack, c )
 		elseif step.op == "**" then
 			local b = table.remove( stack )
@@ -1247,63 +1403,79 @@ function _evaluate( postfix, prgmState, i, stack, callMarkers )
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			a.val = b.val
+
 		elseif step.op == "+=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
-			error"not implemented"
+			local c = evalOps.add( a, b )
+			a.val = c.val
+			
 		elseif step.op == "-=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
-			error"not implemented"
+			local c = evalOps.sub( a, b )
+			a.val = c.val
+
 		elseif step.op == "/=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
-			error"not implemented"
+			local c = evalOps.div( a, b )
+			a.val = c.val
+
 		elseif step.op == "*=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
-			error"not implemented"
+			local c = evalOps.mult( a, b )
+			a.val = c.val
+
 		elseif step.op == "." then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
 			error"not implemented"
 		elseif step.op == "CALL_END" then
 			table.insert(callMarkers, #stack+1) --last arg of function call
-		elseif step.op == "CALL" then
-			local mark = table.remove( callMarkers )
-			if not mark then
-				rerr( lineNum, "Compiler issue: missing end of call args op")
-			end
-			local args = {}
-			local fName = step.val
-			while #stack >= mark do
-				table.insert( args, table.remove( stack ))
-			end
-			
-			--actual call
-			if --TODO, state handle continuing async call
-			--without firing again 
-			
-			local done, c = env.get( fName )( table.unpack(args) )
-			if not done then
-				
-			end
-			if not c.type then
-				local t;
-				if type(c) == "number" then
-					t = "num"
-				elseif type(c)=="string" then
-					t = "str"
-				elseif type(c)=="boolean" then
-					t = "bool"
-				else
-					error("Function err: missing type tag from call result on line "..lineNum.."for type "..type(c))
-				end
-				c = {type=t,val=c}
-			end
-			table.insert( stack, c )
+		elseif step.op == "CALL" then ----------------------------------------------------------todo () type or [] type
 
-			error"not implemented"
+			--if already done (previously called async)
+			if env.callInfo and env.callInfo.returnVals then
+					table.insert( stack, env.callInfo.returnVals[1] )
+					env.callInfo = nil
+			elseif env.callInfo then
+					return false --continuing is handled by yield system
+			else
+
+				local mark = table.remove( callMarkers )
+				if not mark then
+					rerr( lineNum, "Compiler issue: missing end of call args op")
+				end
+				local args = {}
+				local fName = step.val
+				while #stack >= mark do
+					table.insert( args, table.remove( stack ))
+				end
+				
+				--actual call
+				local done, c = env.get( fName )( table.unpack(args) )
+
+				if not done then --100% of shader functions 
+					return false --needs continuation
+				end
+				if not c.type then
+					local t;
+					if type(c) == "number" then
+						t = "num"
+					elseif type(c)=="string" then
+						t = "str"
+					elseif type(c)=="boolean" then
+						t = "bool"
+					else
+						error("Function err: missing type tag from call result on line "..lineNum.."for type "..type(c))
+					end
+					c = {type=t,val=c}
+				end
+				table.insert( stack, c )
+			end
+
 		elseif step.op == "&&" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
@@ -1317,9 +1489,13 @@ function _evaluate( postfix, prgmState, i, stack, callMarkers )
 		end
 
 		i = i+1
+		if autoYield( _evaluate, postfix, prgmState, i ) then 
+			return false 
+		end
 	end
-	
-	return table.unpack( stack )
+	env.stack = {}
+	env.callMarkers = {}
+	return true, table.unpack( stack )
 end
 
 function _doStep( inputs, prgmState )
@@ -1452,9 +1628,19 @@ function _doStep( inputs, prgmState )
 		end
 
 	elseif step.op == "RETURN" then
-		prgmState.RETURN_VAL = _evaluate( step.postfix, prgmState )
-		table.remove( callStack ) --pop
-		return 
+		local done, val = _evaluate( step.postfix, prgmState ) --only one return value used if multiple for some reason
+		if done then
+			if callStack.setCallReturn then
+				callStack.setCallReturn( val ) --sets in parent cs
+				table.remove( callStack ) --pop
+			elseif #prgmState.callStack == 1 then
+				prgmState.RESULT = { val }
+				return --
+			else
+			end
+			return --
+		end
+		return stepIndex
 
 	elseif step.op == "BREAK" then
 		local loopInst = step.loopInst
@@ -1539,8 +1725,6 @@ function _run( prgmName, main, inputs, prgmState )
 	}
 	local cs = prgmState.callStack
 
-	_loadFunctions(prgmName, prgmState)
-
 	if not cs[1].get then
 		cs[1].get = function(x)
 			return prgmState.callStack[1].vars[ x ]
@@ -1552,6 +1736,8 @@ function _run( prgmName, main, inputs, prgmState )
 			cs[1].stepIndex = i
 		end
 	end	
+
+	_loadFunctions(prgmName, prgmState)
 	--init steps
 	if not prgmState.init then
 		while prgmState.inst[ cs[#cs].getStepIndex() ] do
@@ -1572,12 +1758,16 @@ function _run( prgmName, main, inputs, prgmState )
 		end
 	end
 
+	--update variables declared as `out`
 	local out = {}
 	for i, info in pairs( prgm.outputs ) do
 		local varName = info.name
 		local typeName = info.type
 		out[ varName ] = prgmState.globals[ varName ]
 	end
+
+	--return value from called function
+	RESULT = prgmState.RESULT
 end
 
 ----------------------------------------------------------------------------
@@ -1591,6 +1781,12 @@ function loop()
 		unfinished[#unfinished] = nil
 		uf.func( table.unpack( uf.args ) )
 	end
+end
+
+--public interfaces
+
+function compile( source, programName )
+	_compile( source, programName )
 end
 
 -- ----------------------------------------------------------------------------
@@ -1615,3 +1811,6 @@ _run( "frag1", "frag", { --TODO automate size from imported inputs during DECLAR
 repeat
 	loop()
 until #unfinished == 0
+
+print"Done!"
+print( RESULT )
