@@ -42,6 +42,14 @@ local frag = [[
 -- the `in` loads values from a previous step or from the received props table
 -- the `out` provides values to the next step
 --
+-- AXIS
+-- x is right
+-- y is up
+-- z is towards you (out of screen)
+--
+-- Auto yielding could be done better if coroutines were available, 
+-- could also simplify a lot of the logic then too...
+--
 -- Colors are always 0 to 1 for RGBA
 -- all lines are either declerations, asignments or functions 
 -- as such they must each start with one of the following:
@@ -1363,13 +1371,15 @@ function _evaluate( postfix, prgmState, i )
 		elseif step.op == "/" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			error"not implemented"
+			local c = evalOps.div( a,b );
+			
+			table.insert( stack, c )
 		elseif step.op == "==" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			error"not implemented"
+			local c = evalOps.eq( a,b );
+			
+			table.insert( stack, c )
 		elseif step.op == "~=" or step.op == "!=" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
@@ -1672,6 +1682,7 @@ function _copyVar( var )
 	return copy
 end
 
+--loads functions from source code into env, not the globals stuff
 function _loadFunctions( prgmName,prgmState )
 	local prgm = programs[prgmName]
 	local cs = prgmState.callStack[1]
@@ -1795,16 +1806,27 @@ end
 setup()
 
 --simulate command
+_compile( vert, "vert1" )
 _compile( frag, "frag1" )
 repeat
 	loop()
 until #unfinished == 0
 
 --simulate command
+_run( "vert1", "vert", {
+	pos = {-.5,-.5, 0, type="vec3"},
+	--object transform
+	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}  type="mat4"}, --identity
+	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1}  type="mat4"}, --+10 z
+})
+
+--TODO store RESULT in program instead
+--TODO `transfer` copy `out` values from `prgm1` to `prgm2`
+
 _run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
 	color = { 1, 0, 0,type="vec3"}, --red
 	lightPos = {0, 100, 0,type="vec3"},
-	camPos = {0, 10, 0,type="vec3"},
+	camPos = {0, 0, 10, type="vec3"},
 	norm = {0, 1, 0,type="vec3"},
 	vertPos= {0, 0, 0,type="vec3"},
 } )
