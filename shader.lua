@@ -1850,7 +1850,14 @@ function _run( prgmName, main, inputs, prgmState )
 	--init steps
 	if not prgmState.init then
 		while prgmState.inst[ cs[#cs].getStepIndex() ] do
-			cs[#cs].setStepIndex( _doStep( inputs, prgmState ) )
+			local ok, nextIndex = pcall( _doStep, inputs, prgmState )
+			
+			if not ok then
+				prgm.ERROR = nextIndex
+				error(nextIndex)
+			end
+
+			cs[#cs].setStepIndex( nextIndex )
 			if autoYield( _run, prgmName, main, inputs, prgmState ) then return false end
 		end
 		prgmState.init = true
@@ -1862,7 +1869,14 @@ function _run( prgmName, main, inputs, prgmState )
 	--main call
 	if prgmState.init then
 		while prgmState.inst[ cs[#cs].getStepIndex() ] do
-			cs[#cs].setStepIndex( _doStep( inputs, prgmState ) )
+			local ok, nextIndex = pcall( _doStep, inputs, prgmState )
+			
+			if not ok then
+				prgm.ERROR = nextIndex
+				error(nextIndex)
+			end
+
+			cs[#cs].setStepIndex( nextIndex )
 			if autoYield( _run, prgmName, inputs, prgmState ) then return false end
 		end
 	end
@@ -1877,6 +1891,51 @@ function _run( prgmName, main, inputs, prgmState )
 
 	--return value from called function
 	prgm.RESULT = prgmState.RESULT
+end
+
+function _parseProp( val )
+	local v;
+	if not val then
+		v = _wrapVal(nil, "void")
+	else
+		local typeName = val:sub(1, val:find" ")
+		local valStr = val:sub(val:find" "+1)
+
+		if typeName == "num" then
+			v = _wrapVal( tonumber(valStr) )
+
+		elseif typeName == "str" then
+			v = _wrapVal( valStr )
+
+		elseif typeName == "bool" then
+			v = _wrapVal( valStr == "true" )
+
+		elseif typeName:sub(1,3) == "vec" then
+			local size = tonumber( typeName:sub(4) )
+			v = linalg.newVector(size)
+			local i = 1
+			for g in valStr:gmatch"[^,]+" do
+				v.val[i] = tonumber(g)
+				i = i + 1
+			end
+		elseif typeName:sub(1,3) == "mat" then
+			local rows = tonumber( typeName:match"^mat([0-9]+)" )
+			local cols = tonumber( typeName:match"([0-9]+)$")
+			v = linalg.newMatrix( rows, cols )
+			local it = valStr:gmatch"[^,]+"
+			for r = 1, rows do
+				for c = 1, cols do
+					local g = it()
+					if not g then break end
+					v.val[r][c] = tonumber( g )
+				end
+			end
+		elseif typeName:sub(1,3) == "tex" then
+			v = _wrapVal( valStr, typeName )
+		elseif typeName == "tbl" then
+			error"not implemented"
+		end
+	end
 end
 
 ----------------------------------------------------------------------------
@@ -1905,11 +1964,22 @@ end
 
 --public interfaces
 
-function compile( source, programName )
+function setProp()
+	local name, val = V1, V2
+	INPUTS[ name ] = _parseProp( v2 )
+end
+
+function clearProps()
+	INPUTS = {}
+end
+
+function compile()
+	 local source, programName = V1, V2
 	_compile( source, programName )
 end
 
-function transfer( programName1, programName2 )
+function transfer(p1, p2)
+	local programName1, programName2 = p1 or V1, p2 or V2
 	local prgm1 = programs[ programName1 ]
 	local prgm2 = programs[ programName2 ]
 	for name, val in pairs(prgm1.outputs) do
@@ -1917,56 +1987,140 @@ function transfer( programName1, programName2 )
 	end
 end
 
-function run( programName, functionName )
+function run()
+	local programName, functionName = V1, V2
 	_run( programName, functionName, INPUTS )
 end
 
-function 
+--TODO remove, shading needs interpolation between steps
+function shade( state )
+	local vertexShaderProgram = V1
+	local fragmentShaderProgram = V2
+	local x,y,z,u,v = V3,V4,V5,V6 or 0,V7 or 0
+
+	state = state or {
+		stage = "init-1",
+		vert = programs[ vertexShaderProgram ],
+		frag = programs[ fragmentShaderProgram ]
+	}
+
+	if state.stage == "init-1" then
+		INPUTS.pos      = linalg._emptyVector(3)
+		INPUTS.texCoord = linalg._emptyVector(2)
+		
+		INPUTS.pos.val = {x,y,z}
+		if not state.vert then error("couldn't find vertex shader '"..vertexShaderProgram.."'") end
+		if not state.frag then error("couldn't find fragment shader '"..fragmentShaderProgram.."'") end
+
+		state.vert.RESULT = nil
+		state.vert.ERROR = nil
+		state.frag.RESULT = nil
+		state.frag.ERROR = nil
+	end
+
+	if state.stage == "init-2" then
+		-- state.itter = state.itter or inputPropCSV:gmatch"[^,]+"
+		-- while true do
+		-- 	local prop = state.itter()
+		-- 	if not prop then break end
+		-- 	INPUTS[ prop ] = _parseProp( prop )
+		-- 	if autoYield( shade, state ) then return end
+		-- end
+		-- state.itter = nil
+		state.stage = "vertex-launch"
+	end
+
+	if state.stage == "vertex-launch" then
+		_run( vertexShaderProgram, "vert", INPUTS )
+		state.stage = "vertex-check"
+	end
+
+	if state.stage == "vertex-check" then
+		if state.vert.RESULT then 
+			state.stage = "transfer"
+		elseif state.vert.ERROR then
+			return --exit
+		else
+			yield( shade, state )
+		end
+	end
+		
+	if state.stage == "transfer" then
+		transfer( vertexShaderProgram, fragmentShaderProgram )
+		state.stage = "fragment-launch"
+		if autoYield( shade, state ) then return end
+	end
+	
+	if state.stage == "fragment-launch" then
+		_run( fragmentShaderProgram, "frag", INPUTS )
+		state.stage = "fragment-check"
+	end
+
+	if state.stage == "fragment-check" then
+		if state.frag.RESULT then 
+			state.stage = "done"
+		elseif state.frag.ERROR then
+			return --exit
+		else
+			yield( shade, state )
+		end
+	end
+
+	if state.stage == "done" then
+		local r = state.frag.RESULT
+		for i=1,4 do
+			output(r.val[i], i+1)
+		end
+		trigger( 8 )
+	end
+end
+
+
 -- ----------------------------------------------------------------------------
 -- -- vs code only ------------------------------------------------------------
 -- ----------------------------------------------------------------------------
-setup()
+-- setup()
 
---simulate command
-print"COMPILE VERT"
-_compile( vert, "vert1" )
-repeat
-	loop()
-until #unfinished == 0
-
-
-print"COMPILE FRAG"
-_compile( frag, "frag1" )
-repeat
-	loop()
-until #unfinished == 0
+-- --simulate command
+-- print"COMPILE VERT"
+-- _compile( vert, "vert1" )
+-- repeat
+-- 	loop()
+-- until #unfinished == 0
 
 
-print"RUN VERT"
---simulate command
-_run( "vert1", "vert", {
-	pos = {-.5,-.5, 0, type="vec3"},
-	--object transform
-	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1},  type="mat4_4"}, --identity
-	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1},  type="mat4_4"}, --+10 z
-})
-repeat
-	loop()
-until #unfinished == 0
---TODO store RESULT in program instead
---TODO `transfer` copy `out` values from `prgm1` to `prgm2`
+-- print"COMPILE FRAG"
+-- _compile( frag, "frag1" )
+-- repeat
+-- 	loop()
+-- until #unfinished == 0
 
-print"RUN FRAG"
-_run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
-	color = { 1, 0, 0,type="vec3"}, --red
-	lightPos = {0, 100, 0,type="vec3"},
-	camPos = {0, 0, 10, type="vec3"},
-	norm = {0, 1, 0,type="vec3"},
-	vertPos= {0, 0, 0,type="vec3"},
-} )
-repeat
-	loop()
-until #unfinished == 0
 
-print"Done!"
-print( programs.frag1.RESULT )
+-- print"RUN VERT"
+-- --simulate command
+-- _run( "vert1", "vert", {
+-- 	pos = {-.5,-.5, 0, type="vec3"},
+-- 	--object transform
+-- 	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1},  type="mat4_4"}, --identity
+-- 	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1},  type="mat4_4"}, --+10 z
+-- })
+-- repeat
+-- 	loop()
+-- until #unfinished == 0
+-- --TODO store RESULT in program instead
+-- --TODO `transfer` copy `out` values from `prgm1` to `prgm2`
+
+-- print"RUN FRAG"
+-- _run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
+-- 	color = { 1, 0, 0,type="vec3"}, --red
+-- 	lightPos = {0, 100, 0,type="vec3"},
+-- 	camPos = {0, 0, 10, type="vec3"},
+-- 	norm = {0, 1, 0,type="vec3"},
+-- 	vertPos= {0, 0, 0,type="vec3"},
+-- } )
+-- repeat
+-- 	loop()
+-- until #unfinished == 0
+
+-- print"Done!"
+-- print( programs.frag1.RESULT )
