@@ -5,13 +5,13 @@
 --test code
 local vert = [[
 	in vec3 pos;
-	in mat4 transform;
-	in mat4 camera;
+	in mat4_4 transform;
+	in mat4_4 camera;
 	out vec4 camPos;
 
 	vec3 vert() {
-		camPos.xyzw = camera.[1,4],[2,4],[3,4],[4,4];
-		return camera * transform * pos;
+		camPos = vec( camera[1,4], camera[2,4], camera[3,4], camera[4,4] );
+		return (camera * transform * vec(pos,1)).xyz;
 	}
 ]]
 
@@ -107,6 +107,25 @@ local function _makeGlobals()
 	end
 	g.read_var = function(...) return true, read_var(...) end
 	
+	g.vec = function( ... )
+		local vec = linalg._emptyVector( 0 )
+		local args = {...}
+		local n = 1
+		for i = 1, #args do
+			local v = args[i]
+			if v.type=="num" then
+				vec.val[n] = v.val
+				n = n + 1
+			elseif v.type:sub(1,3)=="vec" then
+				for j = 1, v.size do
+					vec.val[n] = v.val[j]
+					n = n + 1
+				end
+			else
+				error("Invalid use of vec function with type "..v.type)
+			end
+		end
+	end
 	
 	--TODO hsv rgb conversion
 	--TODO wrap some math functions to work on vectors
@@ -463,7 +482,7 @@ local types = {
 }
 for r=2,4 do
 	for c=2,4 do
-		types[ ("mat%d_%d"):format(4,c) ] = true
+		types[ ("mat%d_%d"):format(r,c) ] = true
 	end
 end
 --highligher is buggy with quotes
@@ -480,8 +499,6 @@ local patterns = {
 	var = { "^[a-zA-Z_][a-zA-Z0-9_]*$" },
 	op = { "^[()%{%}%[%]%%.%!%#%^%*%/%+%-%=%~%&|;,%<%>]+$" }
 }
-
-
 
 local TIMEOUT = 200 --loops before exit to continue next tick
 local keywords = {
@@ -573,7 +590,7 @@ end
 
 unfinished = {}
 local function yield( func, ... )
-	table.insert(unfinished,  {
+	table.insert(unfinished, 1, {
 	--unfinished[1] = {
 		func = func,
 		args = {...}
@@ -725,7 +742,7 @@ function _evalInstr( state, first, last, i, out, stack )
 			if stack[#stack].op=="CALL" then
 				table.insert( out, table.remove( stack ) ) --move call
 			else
-				table.remove( table(stack) ) --don't need )
+				table.remove( stack ) --don't need )
 			end
 		
 
@@ -1806,23 +1823,33 @@ end
 setup()
 
 --simulate command
+print"COMPILE VERT"
 _compile( vert, "vert1" )
+repeat
+	loop()
+until #unfinished == 0
+
+
+print"COMPILE FRAG"
 _compile( frag, "frag1" )
 repeat
 	loop()
 until #unfinished == 0
 
+
+print"RUN VERT"
 --simulate command
 _run( "vert1", "vert", {
 	pos = {-.5,-.5, 0, type="vec3"},
 	--object transform
-	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}  type="mat4"}, --identity
-	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1}  type="mat4"}, --+10 z
+	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1},  type="mat4"}, --identity
+	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1},  type="mat4"}, --+10 z
 })
 
 --TODO store RESULT in program instead
 --TODO `transfer` copy `out` values from `prgm1` to `prgm2`
 
+print"RUN FRAG"
 _run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
 	color = { 1, 0, 0,type="vec3"}, --red
 	lightPos = {0, 100, 0,type="vec3"},
