@@ -938,25 +938,31 @@ function _evalInstr( state, first, last, i, out, stack )
 
 end
 
-local function _findClosingPar( state, i, par, lvl )
+local function _findClosingPar( state, i, par, fromResume )
+	state.findClosing = state.findClosing or {
+		lvl = 0
+	}
 	par = par or ")"
 	lvl = lvl or 0
 	while state.tokens[ i ] and ( lvl > 0 or state.tokens[ i ] ~= par) do
 		local t = state.tokens[i]
 		if ("([{"):find(t,1,true) then
-			lvl = lvl+1
+			state.findClosing.lvl  = state.findClosing.lvl+1
 		elseif (")]}"):find(t,1,true) then
-			lvl = lvl-1
+			state.findClosing.lvl = state.findClosing.lvl-1
 		end
-		if autoYield( _findClosingPar,"_findClosingPar", state, i, par, lvl ) then return false end
+		if autoYield( _findClosingPar,"_findClosingPar", state, i, par, true ) then return false end
+	end
+	if not fromResume then
+		state.findClosing = nil
 	end
 	return not not state.tokens[ i ], i
 end
 
-function _buildInstructions( state, index )
-	local index = index or 1
+function _buildInstructions( state )
+	local index = state.buildIndex or 1
 	local inst = 
-		state.inFunc and state.inFunc.instructions 
+		state.inFunc and state.functions[state.inFunc].instructions 
 		or state.instructions --{{line1},{line2},...}
 	local ctrlStack = state.ctrlStack or {}
 	local scope = state.scope
@@ -1128,7 +1134,15 @@ function _buildInstructions( state, index )
 					cerr(lineNum,"expected ( for if/while")
 				end
 				if not state._at then
-					local done, at = _findClosingPar( state, i2, ")" )
+					local done, at = callYielding({
+						func=_buildInstructions,
+						label="_buildInstructions-for",
+						args={state,index}
+					},{
+						func = _findClosingPar,
+						args = { state, i2, ")" }
+					})
+
 					if done then
 						state._at = at	
 					end
@@ -1151,7 +1165,15 @@ function _buildInstructions( state, index )
 					cerr(lineNum,"expected ( after for")
 				end
 				if not state._at then
-					local done, at = _findClosingPar( state, i2, ")" )
+					local done, at = callYielding({
+						func=_buildInstructions,
+						label="_buildInstructions-for",
+						args={state,index}
+					},{
+						func = _findClosingPar,
+						args = { state, i2, ")" }
+					})
+
 					if done then
 						state._at = at	
 					end
@@ -1221,11 +1243,12 @@ function _buildInstructions( state, index )
 				table.insert( inst, eval )
 				index = lastToken + 1
 			else --else needs more itteration
-				return false
+				--return false handled by auto yield
 			end
 		end
 		
-		if autoYield( _buildInstructions,"_buildInstructions", state, index ) then return false end
+		state.buildIndex = index
+		if autoYield( _buildInstructions,"_buildInstructions", state, true ) then return false end
 	end
 	return true
 end
@@ -1746,6 +1769,7 @@ function _doStep( inputs, prgmState )
 	local globals = prgmState.callStack[1].vars
 	local vars = callStack.vars
 
+	print(step.op)
 	if step.op == "DECLARE" then
 		if vars[ step.name ] then
 			rerr( step.line, "var "..step.name.." is already defined in this scope")
@@ -1803,7 +1827,7 @@ function _doStep( inputs, prgmState )
 		return done, stepIndex + (done and 1 or 0)
 		
 	elseif step.op == "SCOPE_UP" then
-		_insertCallStack( callStack, true )
+		_insertCallStack( prgmState.callStack, true )
 
 	elseif step.op == "SCOPE_DOWN" then
 		if callStack.onEndBlock then
@@ -1816,10 +1840,10 @@ function _doStep( inputs, prgmState )
 				args={}
 			})
 			if not done then return false, stepIndex end
-			table.remove( callStack ) --pop
+			table.remove( prgmState.callStack ) --pop
 			return true, to
 		else
-			table.remove( callStack ) --pop
+			table.remove( prgmState.callStack ) --pop
 		end
 
 	elseif step.op == "IF" then
