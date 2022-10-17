@@ -1,5 +1,5 @@
 --Shader Module
---Version: 1.0b
+--Version: 1.0a
 --Author: TheIncgi
 --Oct 2022
 --Plasma Demo
@@ -555,6 +555,24 @@ function linalg.rowToVec( matrix, row )
 		out.val[i] = matrix.val[row][i]
 	end
 	return out
+end
+
+function linalg.vecEquals( a, b )
+	if a.type ~= b.type then return false end
+	for i=1, a.size do
+		if a.val[i] ~= b.val[i] then return false end
+	end
+	return false
+end
+
+function linalg.matEquals( a, b )
+	if a.type ~= b.type then return false end
+	for r=1, a.rows do
+		for c=1, a.cols do
+			if a.val[r][c] ~= b.val[r][c] then return false end
+		end
+	end
+	return true
 end
 
 function linalg.push( matrix, channel )
@@ -1559,7 +1577,7 @@ local evalOps = {
 		return c
 	end,
 
-	assign = function( a, val )
+	assign = function( a, val, lineNum )
 		if a.ref then
 			local x = a.ref.var.val
 			local index = a.ref.index
@@ -1571,8 +1589,62 @@ local evalOps = {
 			a.val = val.val
 		end
 	end,
+
 	eq = function( a, b, lineNum )
-		error"not implemented"
+		if a.type ~= b.type then
+			return false
+
+		elseif a.type == "num" then
+			return a.val == b.val
+
+		elseif a.type:sub(1,3) == "vec" then
+			return linalg.vecEquals( a, b )
+
+		elseif a.type:sub(1,3) == "mat" then
+			return linalg.matEquals( a, b )
+
+		elseif a.type:sub(1,3) == "tex" then
+			return a.val == b.val --that could be a lot of text...
+
+		elseif a.type == "bool" then
+			return a.val == b.val
+
+		elseif a.type == "str" then
+			return a.val == b.val
+
+		end
+		error("== not implemented for type "..a.type)
+	end,
+
+	lt = function( a, b, lineNum )
+		if a.type ~= b.type or a.type:sub(1,3) == "mat" or a.type:sub(1,3) == "tex" then
+			rerr(lineNum, "can preform comparison with type "..a.type.." and "..b.type)
+		elseif a.type == "num" then
+			return a.val < b.val
+
+		elseif a.type:sub(1,3) == "vec" then
+			return linalg.magnitude( a ) < linalg.magnitude( b )
+
+		elseif a.type == "bool" then
+			return (a and 1 or 0) < (b and 1 or 0)
+
+		elseif a.type == "str" then
+			return a.val < b.val
+
+		end
+		error("< not implemented for type "..a.type)
+	end,
+
+	gt = function( a, b, lineNum )
+		return (not evalOps.lt(a,b,lineNum) and (not evalOps.eq(a,b,lineNum)))
+	end,
+
+	lte = function( a, b, lineNum )
+		return evalOps.lt(a,b,lineNum) or evalOps.eq(a,b,lineNum)
+	end,
+
+	gte = function( a, b, lineNum )
+		return evalOps.gt(a,b,lineNum) or evalOps.eq(a,b,lineNum)
 	end
 }
 
@@ -1643,23 +1715,26 @@ function _evaluate( postfix, prgmState, resume )
 		elseif step.op == ">" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			error"not implemented"
+			local c evalOps.gt( a, b, lineNum )
+			table.insert( stack, c )
+			
 		elseif step.op == "<" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			error"not implemented"
+			local c = evalOps.lt( a, b, lineNum )
+
+			table.insert( stack, c )
 		elseif step.op == ">=" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			error"not implemented"
+			local c = evalOps.gte( a, b, lineNum )
+			table.insert( stack, c )
+
 		elseif step.op == "<=" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
-			local c;
-			error"not implemented"
+			local c = evalOps.lte( a, b, lineNum )
+			table.insert( stack, c )
 			
 		elseif step.op == "=" then --copy ref/assign
 			local b = table.remove( stack )
@@ -2445,89 +2520,6 @@ function _runFrag( programName, state )
 		
 	end
 end
-
--- --TODO remove, shading needs interpolation between steps
--- function shade( state )
--- 	local vertexShaderProgram = V1
--- 	local fragmentShaderProgram = V2
--- 	local x,y,z,u,v = V3,V4,V5,V6 or 0,V7 or 0
-
--- 	state = state or {
--- 		stage = "init-1",
--- 		vert = programs[ vertexShaderProgram ],
--- 		frag = programs[ fragmentShaderProgram ]
--- 	}
-
--- 	if state.stage == "init-1" then
--- 		INPUTS.pos      = linalg._emptyVector(3)
--- 		INPUTS.texCoord = linalg._emptyVector(2)
-		
--- 		INPUTS.pos.val = {x,y,z}
--- 		if not state.vert then error("couldn't find vertex shader '"..vertexShaderProgram.."'") end
--- 		if not state.frag then error("couldn't find fragment shader '"..fragmentShaderProgram.."'") end
-
--- 		state.vert.RESULT = nil
--- 		state.vert.ERROR = nil
--- 		state.frag.RESULT = nil
--- 		state.frag.ERROR = nil
--- 	end
-
--- 	if state.stage == "init-2" then
--- 		-- state.itter = state.itter or inputPropCSV:gmatch"[^,]+"
--- 		-- while true do
--- 		-- 	local prop = state.itter()
--- 		-- 	if not prop then break end
--- 		-- 	INPUTS[ prop ] = _parseProp( prop )
--- 		-- 	if autoYield( shade, state ) then return end
--- 		-- end
--- 		-- state.itter = nil
--- 		state.stage = "vertex-launch"
--- 	end
-
--- 	if state.stage == "vertex-launch" then
--- 		_run( vertexShaderProgram, "vert", INPUTS )
--- 		state.stage = "vertex-check"
--- 	end
-
--- 	if state.stage == "vertex-check" then
--- 		if state.vert.RESULT then 
--- 			state.stage = "transfer"
--- 		elseif state.vert.ERROR then
--- 			return --exit
--- 		else
--- 			yield( shade, state )
--- 		end
--- 	end
-		
--- 	if state.stage == "transfer" then
--- 		transfer( vertexShaderProgram, fragmentShaderProgram )
--- 		state.stage = "fragment-launch"
--- 		if autoYield( shade, state ) then return end
--- 	end
-	
--- 	if state.stage == "fragment-launch" then
--- 		_run( fragmentShaderProgram, "frag", INPUTS )
--- 		state.stage = "fragment-check"
--- 	end
-
--- 	if state.stage == "fragment-check" then
--- 		if state.frag.RESULT then 
--- 			state.stage = "done"
--- 		elseif state.frag.ERROR then
--- 			return --exit
--- 		else
--- 			yield( shade, state )
--- 		end
--- 	end
-
--- 	if state.stage == "done" then
--- 		local r = state.frag.RESULT
--- 		for i=1,4 do
--- 			output(r.val[i], i+1)
--- 		end
--- 		trigger( 8 )
--- 	end
--- end
 
 
 -- ----------------------------------------------------------------------------
