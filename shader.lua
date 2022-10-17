@@ -23,13 +23,14 @@ local makeCam = [[
 			vec( 0, 0, far/(far-near), 0 ), //changed to 0, z pos
 			vec( 0, 0, far*near / (near-far), 0 )
 		);
-		cam = rotate( cam, vec(0,0,1), rad( rot.z ) ); //roll
-		cam = rotate( cam, vec(1,0,0), rad( rot.y ) ); //pitch
-		cam = rotate( cam, vec(0,1,0), rad( rot.x ) ); //yaw (Y+ is up)
+		cam = rotateMatrix( cam, vec(0,0,1), rad( rot.z ) ); //roll
+		cam = rotateMatrix( cam, vec(1,0,0), rad( rot.y ) ); //pitch
+		cam = rotateMatrix( cam, vec(0,1,0), rad( rot.x ) ); //yaw (Y+ is up)
 
 		cam[1,4] = pos.x;
 		cam[2,4] = pos.y;
 		cam[3,4] = pos.z;
+		return; //required in current version, no warnings though
 	}
 ]]
 
@@ -52,10 +53,16 @@ local frag = [[
 	in vec3 norm;
 	in vec3 vertPos;
 	
+	
+	num global_offset( num v ) {
+		return v + 0.1;
+	}
+
 	vec4 frag() {
 		vec3 lightVec = lightPos - vertPos;
 		num factor = abs(norm * lightVec);   //dot product
-		factor += 0.1;
+		//factor += 0.1;
+		factor = global_offset( factor ); //does not work yet
 		factor = min( 1, factor );
 		return color * factor;
 	}
@@ -120,6 +127,7 @@ local function _makeGlobals()
 	for name, val in pairs( math ) do
 		if type(val) == "function" then
 			g[ name ] = function(...)
+				local thisFunc = name --debug
 				local args = {...}
 				for i=1, #args do
 					args[i] = args[i].val
@@ -138,46 +146,12 @@ local function _makeGlobals()
 	g.read_var = function(...) return true, read_var(...) end
 	
 	g.vec = function( ... )
-		local vec = linalg._emptyVector( 0 )
-		local args = {...}
-		local n = 1
-		for i = 1, #args do
-			local v = args[i]
-			if v.type=="num" then
-				vec.val[n] = v.val
-				n = n + 1
-			elseif v.type:sub(1,3)=="vec" then
-				for j = 1, v.size do
-					vec.val[n] = v.val[j]
-					n = n + 1
-				end
-			else
-				error("Invalid use of vec function with type "..v.type)
-			end
-		end
-		if n-1 <= 1 then error("vec(...) requires 2+ args") end
-		vec.size = n-1
-		vec.type = "vec"..vec.size
+		local vec = linalg.vec( ... )
 		return true, vec
 	end
 
 	g.mat = function( ... )
-		local val = {}
-		local size;
-		for i,vec in ipairs{...} do
-			if vec.type:sub(1,3) ~="vec" then error("matrix construction expects vectors for rows") end
-			if i==1 then
-				size = vec.size
-			elseif size~=vec.size then
-				error"Can not create a matrix out of mixed vector sizes"
-			end
-			val[i] = {}
-			for j = 1, vec.size do
-				val[i][j] = vec.val[j]
-			end
-		end
-		local mat = linalg._emptyMatrix(#val, size)
-		mat.val = val
+		local mat = linalg.mat( ... )
 		return true, mat
 	end
 
@@ -197,9 +171,9 @@ local function _makeGlobals()
 		return true, _wrapVal( 1 / math.tan( angleRadians.val ), "num" )
 	end
 
-	g.rotateMatrix = linalg.rotateMatrix
-	g.len = linalg.magnitude
-	g.normalize = linalg.normalize
+	g.rotateMatrix = function(...) return true, linalg.rotateMatrix(...) end
+	g.len = function(...) return true, linalg.magnitude end
+	g.normalize = function(...) return true, linalg.normalize end
 	
 
 	
@@ -255,12 +229,58 @@ function linalg.newVector( size )
 	return out
 end
 
+function linalg.vec( ... )
+	local vec = linalg._emptyVector( 0 )
+	local args = {...}
+	local n = 1
+	for i = 1, #args do
+		local v = args[i]
+		if v.type=="num" then
+			vec.val[n] = v.val
+			n = n + 1
+		elseif v.type:sub(1,3)=="vec" then
+			for j = 1, v.size do
+				vec.val[n] = v.val[j]
+				n = n + 1
+			end
+		else
+			error("Invalid use of vec function with type "..v.type)
+		end
+	end
+	if n-1 <= 1 then error("vec(...) requires 2+ args") end
+	vec.size = n-1
+	vec.type = "vec"..vec.size
+	return vec
+end
+
+function linalg.mat( ... )
+	local val = {}
+	local size;
+	for i,vec in ipairs{...} do
+		if vec.type:sub(1,3) ~="vec" then error("matrix construction expects vectors for rows") end
+		if i==1 then
+			size = vec.size
+		elseif size~=vec.size then
+			error"Can not create a matrix out of mixed vector sizes"
+		end
+		val[i] = {}
+		for j = 1, vec.size do
+			val[i][j] = vec.val[j]
+		end
+	end
+	local mat = linalg._emptyMatrix(#val, size)
+	mat.val = val
+	return mat
+end
+
+--this op is in place!
 function linalg.identity( matrix )
 	for r = 1, matrix.rows do
 		for c = 1, matrix.cols do
 			matrix.val[r][c] = r==c and 1 or 0
 		end
 	end
+	return matrix
 end
 
 function linalg.subMat( x, y )
@@ -333,7 +353,7 @@ function linalg.normalize( vec )
 	local m = linalg.magnitude( vec )
 	local out = linalg._emptyVector( vec.size )
 	for i = 1, vec.size do
-		out.val[i] = vec.val[i] / m
+		out.val[i] = m==0 and 0 or vec.val[i] / m
 	end
 	return out
 end
@@ -379,11 +399,15 @@ end
 
  --https://math.stackexchange.com/a/4155115
  function linalg.newRotateMatrix( vec, amount )
-	local a = linalg.normalized( vec )
-	a = {x=a[1], y=a[2], z=a[3],} --easier to read
+	if amount.val == 0 then
+		return linalg.identity(linalg.newMatrix( 4, 4 ))
+	end
+
+	local a = linalg.normalize( vec )
+	a = {x=a.val[1], y=a.val[2], z=a.val[3],} --easier to read
 	a.X, a.Y, a.Z = a.x*a.x,  a.y*a.y,  a.z*a.z --^2, found on identity
-	local C = math.cos( amount )
-	local S = math.sin( amount )
+	local C = math.cos( amount.val )
+	local S = math.sin( amount.val )
 	local U = 1 - C
 	local mat = linalg._emptyMatrix( 4, 4 )
 	mat.val[1] = { U * a.X       + C,          U * a.x * a.y - S * a.z,   U * a.x * a.z + S * a.y,   0 }
@@ -420,7 +444,7 @@ end
 
 function linalg.rotateMatrix( matrix, axis, degrees )
 	local rot = linalg.newRotateMatrix( axis, degrees )
-	return linalg.mult( matrix, rot )
+	return linalg.matrixMult( matrix, rot )
 end
 
 function linalg.scaleMatrix( matrix, scaleVec )
@@ -480,8 +504,13 @@ function linalg.vecToRow( vec )
 end
 
 function linalg.vecSwizzle( vec, swizzle )
-	local val = {}
 	swizzle = swizzle.val
+	if #swizzle == 1 then
+		return _wrapVal( vec.val[ swizzleIndexes[swizzle] ] )
+	elseif #swizzle == 0 then
+		error"Swizzle with len 0"
+	end
+	local val = {}
 	for i = 1, #swizzle do
 		local si = swizzleIndexes[ swizzle:sub(i,i) ]
 		if not si then error("Invalid swizzle letter '"..swizzle:sub(i,i).."'") end
@@ -1367,7 +1396,7 @@ function _wrapVal( val, typeName )
 end
 
 --includeUpScope false on function call
-function _insertCallStack( cs, includeUpScope )
+function _insertCallStack( cs, includeUpScope, fName )
 	local global = cs[1]
 
 	local vars = {}
@@ -1376,13 +1405,13 @@ function _insertCallStack( cs, includeUpScope )
 	local new = {
 		vars = vars,
 		parent = cs[#cs],
-		onEndBlock = false
+		onEndBlock = false,
 	}
 	if not includeUpScope then
 		new.stepIndex = 1
 		--call info is stored in parent because `new` will be popped off stack when done
 		new.parent.callInfo = {
-			returnVals = false
+			returnVals = false,
 		}
 	end
 	--checks self
@@ -1404,6 +1433,9 @@ function _insertCallStack( cs, includeUpScope )
 		end
 	end
 
+	new.fName = fName or new.parent and new.parent.fName
+	
+
 	--not needed for global, no return values in global
 	--removed, handled by yield
 	-- new.setCallContinue = function( stuff )
@@ -1422,11 +1454,13 @@ function _insertCallStack( cs, includeUpScope )
 			if not new.parent then
 				error("Nowhere to set call return")
 			end
-			return new.parent.setCallReturn( stuff )
+			return new.parent.setCallReturn( ... )
 		else
-			new.callInfo.returnVals = { stuff }
+			new.callInfo.returnVals = { ... }
 		end
 	end
+
+	table.insert( cs, new )
 
 	--should only be cleared when processing the result in evaluate->call, so the current stack will have the info
 	-- new.clearCallInfo = function()
@@ -1506,13 +1540,13 @@ local evalOps = {
 			c = linalg.scaleVec( a, 1/b )
 		elseif a.type == "num" and b.type:sub(1,3) == "vec" then
 			c = linalg.vecUnder( b, a )
-		elseif a.type(1,3) == "mat" or b.type:sub(1,3) == "mat" then
+		elseif a.type:sub(1,3) == "mat" or b.type:sub(1,3) == "mat" then
 			if a.type=="num" then 
 				c = linalg.matrixUnder( b, a )
 			elseif b.type =="num" then
 				c = linalg.scaleMatrix( a, 1/b )
 			-- no matrix divide matrix
-			-- elseif a.type(1,3) == "mat" and b.type:sub(1,3) == "mat" then
+			-- elseif a.type:sub(1,3) == "mat" and b.type:sub(1,3) == "mat" then
 			-- 	c = linalg.matrixMult( a, b )
 			else
 				rerr(lineNum, "can't divide "..a.type.." with "..b.type)
@@ -1543,15 +1577,16 @@ local evalOps = {
 }
 
 --@yielding
-function _evaluate( postfix, prgmState, i )
+function _evaluate( postfix, prgmState, resume )
 
 	local env = prgmState.callStack[#prgmState.callStack]
+	local i = env._eval_index or 1
 	env.stack = env.stack or {}
 	env.callMarkers = env.callMarkers or {}
 	local callMarkers = env.callMarkers
 	local stack = env.stack
-	local i = i or 1
-	local lineNum = prgmState.inst[ env.getStepIndex() ].line
+
+	local lineNum = _getInstructions( prgmState )[ env.getStepIndex() ].line
 	while i <=#postfix do
 		local step = postfix[i]
 		if step.op == "val" then
@@ -1750,23 +1785,34 @@ function _evaluate( postfix, prgmState, i )
 		end
 
 		i = i+1
-		if autoYield( _evaluate,"_evaluate", postfix, prgmState, i ) then 
+		env._eval_index = i
+		if autoYield( _evaluate,"_evaluate", postfix, prgmState, true ) then 
 			return false 
 		end
 	end
-	env.stack = {}
-	env.callMarkers = {}
+	if not resume then
+		env.stack = {}
+		env.callMarkers = {}
+		env._eval_index = nil
+	end
 	return true, table.unpack( stack )
+end
+
+function _getInstructions( prgmState )
+	local callStack = prgmState.callStack[ #prgmState.callStack ]
+	return  prgmState.prgm.functions[ callStack.fName or prgmState.func ] and  prgmState.prgm.functions[ callStack.fName or prgmState.func ].instructions or prgmState.inst
 end
 
 --@yielding
 function _doStep( inputs, prgmState )
 	--DECLARE, INPUT, EVAL, IF, FOR, WHILE, RETURN, BREAK, CONTINUE
-	local steps = prgmState.inst
+	
+	
 	local stepIndex = prgmState.callStack[ #prgmState.callStack ].getStepIndex()
-	local step = steps[ stepIndex ]
-	local callStack = prgmState.callStack[ prgmState.lvl ]
 	local globals = prgmState.callStack[1].vars
+	local callStack = prgmState.callStack[ #prgmState.callStack ]
+	local steps = _getInstructions( prgmState )
+	local step = steps[ stepIndex ]
 	local vars = callStack.vars
 
 	print(step.op)
@@ -1796,21 +1842,21 @@ function _doStep( inputs, prgmState )
 		local ty = globals[ step.name ].type
 		local v = vars[ step.name ]
 		if not inputs[ step.name ] then rerr( step.line, "Missing input '"..step.name.."'") end
-		v.val = _typeCheck( inputs[ step.name ], ty, step.name, step.line )
-		v.val.type = nil --only used while inputing, type stored in v
-		if ty:sub(1,3) == "vec" then
-			v.size = #v.val
-			if v.size ~= tonumber( ty:match("[0-9]+$") ) then
-				rerr( step.line, "incorrect vector size used for input")
-			end
-		elseif ty:sub(1,3)=="mat" then
-			v.rows = #v.val
-			v.cols = #v.val[1]
-			if v.rows ~= tonumber(ty:match"^mat([0-9]+)_") or
-			v.cols ~= tonumber(ty:match"([0-9]+)$") then
-				rerr( step.line, "incorrect matrix size used for input")
-			end
-		end
+		v.val = _copyVar( _typeCheck( inputs[ step.name ], ty, step.name, step.line ) ).val
+		
+		-- if ty:sub(1,3) == "vec" then
+		-- 	v.size = #v.val
+		-- 	if v.size ~= tonumber( ty:match("[0-9]+$") ) then
+		-- 		rerr( step.line, "incorrect vector size used for input")
+		-- 	end
+		-- elseif ty:sub(1,3)=="mat" then
+		-- 	v.rows = #v.val
+		-- 	v.cols = #v.val[1]
+		-- 	if v.rows ~= tonumber(ty:match"^mat([0-9]+)_") or
+		-- 	v.cols ~= tonumber(ty:match"([0-9]+)$") then
+		-- 		rerr( step.line, "incorrect matrix size used for input")
+		-- 	end
+		-- end
 		
 		return true,stepIndex + 1
 
@@ -1866,7 +1912,7 @@ function _doStep( inputs, prgmState )
 		end
 
 		if truthy then
-			prgmState.lvl = prgmState.lvl + 1
+			-- prgmState.lvl = prgmState.lvl + 1 --no idea what this was about, old unchanged code maybe?
 		else
 			return true, step.skip
 		end
@@ -1999,13 +2045,20 @@ function _doStep( inputs, prgmState )
 			args={ step.postfix, prgmState }
 		}) --only one return value used if multiple for some reason
 		if done then
-			if callStack.setCallReturn then
-				callStack.setCallReturn( val ) --sets in parent cs
-				table.remove( callStack ) --pop
-			elseif #prgmState.callStack == 1 then
+			
+			if #prgmState.callStack == 2 then
 				prgmState.RESULT = { val }
-				return --
-			else
+				return true --
+			elseif callStack.setCallReturn then
+				callStack.setCallReturn( val ) --sets in parent cs
+				while #prgmState.callStack > 2 do
+					local tmp = table.remove( prgmState.callStack ) --pop
+					if tmp and tmp.parent and tmp.parent.callInfo then 
+						break
+					end
+				end
+			elseif #prgmState.callStack == 1 then
+				rerr(step.line, "return statement outside function")
 			end
 			return --
 		end
@@ -2046,7 +2099,7 @@ function _copyVar( var )
 		return linalg.copyVector( var )
 	end
 	
-	local copy = {type = var.type}
+	local copy = {type = var.type, val = var.val}
 	return copy
 end
 
@@ -2055,36 +2108,39 @@ function _loadFunctions( prgmName,prgmState )
 	local prgm = programs[prgmName]
 	local cs = prgmState.callStack[1]
 	local stepIndex = prgmState.callStack[#prgmState.callStack].getStepIndex()
-	local lineNum = prgmState.inst[stepIndex].line
+	
 
 	for name,data in pairs( prgm.functions )do
-		cs.vars[name] = function( ... )
-			local args = {...}
-			local inst = data.instructions
-			local params = data.params
-			_insertCallStack( prgmState.callStack, false )
-			prgmState.inst = prgm.functions[ name ].instructions
-			local thisLvl = #prgmState.callStack
-			fstack = prgmState.callStack[ thisLvl ]
+		if not cs.vars[name] then
+			cs.vars[name] = function( ... )
+				local lineNum = prgmState.inst[stepIndex].line
+				local args = {...}
+				local inst = data.instructions
+				local params = data.params
+				_insertCallStack( prgmState.callStack, false, name )
+				prgmState.inst = prgm.functions[ name ].instructions
+				local thisLvl = #prgmState.callStack
+				fstack = prgmState.callStack[ thisLvl ]
 
-			--add params to block
-			for i=1, #params do
-				local ptype = params[i].type
-				local pname = params[i].name
-				if ptype ~= args[i].type then
-					rerr(lineNum, "arg "..i.." expected "..ptype..", got "..args[i.type])
+				--add params to block
+				for i=1, #params do
+					local ptype = params[i].type
+					local pname = params[i].name
+					if ptype ~= args[i].type then
+						rerr(lineNum, "arg "..i.." expected "..ptype..", got "..args[i.type])
+					end
+
+					--mat/vec are by ref
+					if type(args[i].val) ~= "table" then
+						fstack.vars[ pname ] = _copyVar(args[i])
+					else
+						fstack.vars[ pname ] = args[i]
+					end
 				end
 
-				--mat/vec are by ref
-				if type(args[i].val) ~= "table" then
-					fstack.vars[ pname ] = _copyVar(args[i])
-				else
-					fstack.vars[ pname ] = args[i]
-				end
+				-- let main loop catch the changes
+
 			end
-
-			-- let main loop catch the changes
-
 		end
 	end
 end
@@ -2114,12 +2170,15 @@ function _run( prgmName, main, inputs, prgmState )
 		cs[1].setStepIndex = function( i )
 			cs[1].stepIndex = i
 		end
+		-- cs[1].setCallReturn = function( val )
+		-- 	prgmState.RESULT = val
+		-- end
 	end	
 
 	_loadFunctions(prgmName, prgmState)
 	--init steps
 	if not prgmState.init then
-		while prgmState.inst[ cs[#cs].getStepIndex() ] do
+		while _getInstructions( prgmState )[ cs[#cs].getStepIndex() ] do
 			local ok, stepDone, nextIndex = pcall(	callYielding, {
 					func=_run,
 					label="_run-init",
@@ -2146,7 +2205,7 @@ function _run( prgmName, main, inputs, prgmState )
 
 	--main call
 	if prgmState.init then
-		while prgmState.inst[ cs[#cs].getStepIndex() ] do
+		while _getInstructions( prgmState )[ cs[#cs].getStepIndex() ] do
 			local ok, stepDone, nextIndex = pcall(	callYielding, {
 				func=_run,
 				label="_run-init",
@@ -2483,6 +2542,10 @@ function output( val, pin )
 end
 setup()
 
+
+local vec = linalg.vec
+local mat = linalg.mat
+local w = _wrapVal
 --simulate command
 print"COMPILE Camera"
 _compile( makeCam, "makeCam" )
@@ -2505,22 +2568,26 @@ until #unfinished == 0
 
 print"RUN makeCam"
 _run("makeCam", "mkCam",{
-	fovWidth = _wrapVal(90),
-	fovHeight = _wrapVal(90),
-	pos = {0,0,10, type="vec3"},
-	rot = {0,0,0, type="vec3"},
-	near = _wrapVal( .1 ),
-	far = _wrapVal( 50 )
+	fovWidth = w(90),
+	fovHeight = w(90),
+	pos = vec(w(0),w(0),w(10)),
+	rot = vec(w(0),w(0),w(0)),
+	near = w(.1),
+	far = w(50)
 })
 
+repeat
+	loop()
+until #unfinished == 0
 
 print"RUN VERT"
 --simulate command
+
 _run( "vert1", "vert", {
-	pos = {-.5,-.5, 0, type="vec3"},
+	pos = vec(w(-.5),w(-.5), w(0)),
 	--object transform
-	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1},  type="mat4_4"}, --identity
-	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1},  type="mat4_4"}, --+10 z
+	transform = mat(vec(w(1),w(0),w(0),w(0)), vec(w(0),w(1),w(0),w(0)),vec(w(0),w(0),w(1),w( 0)), vec(w(0),w(0),w(0),w(1))), --identity
+	camera =    mat(vec(w(1),w(0),w(0),w(0)), vec(w(0),w(1),w(0),w(0)),vec(w(0),w(0),w(1),w(10)), vec(w(0),w(0),w(0),w(1))), --+10 z
 })
 repeat
 	loop()
@@ -2530,11 +2597,11 @@ until #unfinished == 0
 
 print"RUN FRAG"
 _run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
-	color = { 1, 0, 0,type="vec3"}, --red
-	lightPos = {0, 100, 0,type="vec3"},
-	camPos = {0, 0, 10, type="vec3"},
-	norm = {0, 1, 0,type="vec3"},
-	vertPos= {0, 0, 0,type="vec3"},
+	color    = vec( w(1), w(0), w(0) ), --red
+	lightPos = vec( w(0), w(100), w( 0) ),
+	camPos   = vec( w(0), w(  0), w(10) ),
+	norm     = vec( w(0), w(  1), w( 0) ),
+	vertPos  = vec( w(0), w(  0), w( 0) ),
 } )
 repeat
 	loop()
