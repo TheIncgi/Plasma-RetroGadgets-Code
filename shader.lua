@@ -1,8 +1,38 @@
+--Shader Module
+--Version: 1.0b
 --Author: TheIncgi
 --Oct 2022
 --Plasma Demo
 
 --test code
+local makeCam = [[
+	in num fovWidth;
+	in num fovHeight;
+	in num near;
+	in num far;
+	in vec3 pos;
+	in vec3 rot; //{yaw, pitch, roll}
+
+	out mat4_4 cam;
+
+	//source https://stackoverflow.com/a/62243585/11295774
+	void cam() {
+		cam = mat(
+			vec( cot(fovWidth)/2, 0, 0, 0 ),
+			vec( 0, cot(fovHeight)/2, 0, 0 ),
+			vec( 0, 0, far/(far-near), 0 ), //changed to 0, z pos
+			vec( 0, 0, far*near / (near-far), 0 )
+		);
+		cam = rotate( cam, vec(0,0,1), rad( rot.z ) ); //roll
+		cam = rotate( cam, vec(1,0,0), rad( rot.y ) ); //pitch
+		cam = rotate( cam, vec(0,1,0), rad( rot.x ) ); //yaw (Y+ is up)
+
+		cam[4,1] = pos.x;
+		cam[4,2] = pos.y;
+		cam[4,3] = pos.z;
+	}
+]]
+
 local vert = [[
 	in vec3 pos;
 	in mat4_4 transform;
@@ -131,6 +161,26 @@ local function _makeGlobals()
 		return true, vec
 	end
 
+	g.mat = function( ... )
+		local val = {}
+		local size;
+		for i,vec in ipairs{...} do
+			if vec.type:sub(1,3) ~="vec" then error("matrix construction expects vectors for rows") end
+			if i==1 then
+				size = vec.size
+			elseif size~=vec.size then
+				error"Can not create a matrix out of mixed vector sizes"
+			end
+			val[i] = {}
+			for j = 1, vec.size do
+				val[i][j] = vec.val[j]
+			end
+		end
+		local mat = linalg._emptyMatrix(#val, size)
+		mat.val = val
+		return true, mat
+	end
+
 	g.row = function( vec )
 		return true, linalg.vecToRow( vec )
 	end
@@ -138,6 +188,17 @@ local function _makeGlobals()
 	g.col = function( vec )
 		return true, linalg.vecToCol( vec )
 	end
+
+	--co tangent
+	g.cot = function( angleRadians )
+			return true, _wrapVal( 1 / math.tan( angleRadians ), "num" )
+	end
+
+	g.rotateMatrix = linalg.rotateMatrix
+	g.len = linalg.magnitude
+	g.normalize = linalg.normalize
+	
+
 	
 	--TODO hsv rgb conversion
 	--TODO wrap some math functions to work on vectors
@@ -632,19 +693,30 @@ function _chunkType( text )
 end
 
 unfinished = {}
-local function yield( func, ... )
+local function callYielding( resumeSelf, call )
+	local nuf = #unfinished
+	local rets = {call.func(call.args)}
+	if rets[1] then
+		return table.unpack( rets )
+	end
+	table.insert(unfinished, nuf, resumeSelf)
+	return table.unpack( rets )
+end
+
+local function yield( func,label, ... )
 	table.insert(unfinished, {
 	--unfinished[1] = {
 		func = func,
+		label = label, --for debugging
 		args = {...}
 	})
 end
 
 local timeout = TIMEOUT
-function autoYield( func, ... )
+function autoYield( func, label, ... )
 	timeout = timeout - 1
 	if timeout <= 0 then
-		yield( func, ... )
+		yield( func, label, ... )
 		return true
 	end
 	return false
@@ -685,7 +757,7 @@ function _tokenize( src, state, quoting )
 		else
 			area[2] = area[2]+1 --was still valid
 		end
-		if autoYield( _tokenize, src, state ) then return false end
+		if autoYield( _tokenize,"_tokenize", src, state ) then return false end
 	end
 	local chunk = src:sub( state.area[1], state.area[2] )
 	if #chunk > 0 then --whitespace or chunk
@@ -700,7 +772,7 @@ end
 function _computeLineNums( state, index, lineNum, comment )
 	local tokens = state.tokens
 	comment = comment or false
-	state.lineNums = {}
+	state.lineNums = state.lineNums or {}
 	lineNum = lineNum or 1
 	index = index or 1
 	
@@ -719,7 +791,7 @@ function _computeLineNums( state, index, lineNum, comment )
 			index = index + 1
 		end
 		
-		if autoYield( _computeLineNums, state, index, lineNum, comment ) then 
+		if autoYield( _computeLineNums,"_computeLineNums", state, index, lineNum, comment ) then 
 			return false
 		end
 	end
@@ -796,7 +868,7 @@ function _evalInstr( state, first, last, i, out, stack )
 			if t1:match( patterns.num.bin ) then
 				n = tonumber( t1:sub(2), 2 ) --0b
 			else
-				n =tonumber( t1 ) --handles 0x already :)
+				n = tonumber( t1 ) --handles 0x already :)
 			end
 			if not n then
 				cerr( lineNum )
@@ -839,7 +911,7 @@ function _evalInstr( state, first, last, i, out, stack )
 		end
 
 		i = i+1
-		if autoYield( _evalInstr, state, first, last, i, out, stack ) then return end
+		if autoYield( _evalInstr,"_evalInstr", state, first, last, i, out, stack ) then return end
 	end
 
 
@@ -868,7 +940,7 @@ local function _findClosingPar( state, i, par, lvl )
 		elseif (")]}"):find(t,1,true) then
 			lvl = lvl-1
 		end
-		if autoYield( _findClosingPar, state, i, par, lvl ) then return false end
+		if autoYield( _findClosingPar,"_findClosingPar", state, i, par, lvl ) then return false end
 	end
 	return not not state.tokens[ i ], i
 end
@@ -1135,12 +1207,12 @@ function _buildInstructions( state, index )
 			end --else needs more itteration
 		end
 		
-		if autoYield( _buildInstructions, state, index ) then return false end
+		if autoYield( _buildInstructions,"_buildInstructions", state, index ) then return false end
 	end
 	return true
 end
 
-function _compile( src, prgmName, state )
+function _compile( src, prgmName, main, state )
 	state = state or {
 		instructions = {}, --global
 		functions = {}, --like instructions, name={instr...}
@@ -1151,21 +1223,31 @@ function _compile( src, prgmName, state )
 		outputs = {},
 		needsToken = false,
 		step = "tokenize",
+		main = main,
 		line = 1
 	}
 	
 	if state.step == "tokenize" then
-		if _tokenize( src, state ) then
+		if callYielding( { --just imagine... coroutine.yield()
+			func=_compile,
+			label="_compile-tokenize",
+			args={src,prgmName,main,state}
+		}, {
+			func=_tokenize,
+			args={src, state}
+		} ) then
 			state.step = "computeLines"
+		else
+			return
 		end
-		if autoYield( _compile,  src, prgmName, state ) then return false end
+		
 	end
 	
 	if state.step == "computeLines" then
 		if _computeLineNums( state ) then
 			state.step = "buildInstructions"
 		end
-		if autoYield( _compile, src, prgmName, state ) then return false end
+		if autoYield( _compile, "_compile-computeLines", src, prgmName, main, state ) then return false end
 	end
 	
 	if state.step == "buildInstructions" then
@@ -1173,7 +1255,7 @@ function _compile( src, prgmName, state )
 			programs[ prgmName ] = state
 			return true
 		end
-		if autoYield( _compile, src, prgmName, state ) then return false end
+		if autoYield( _compile, "_compile-buildInstructions", src, prgmName, main, state ) then return false end
 	end
 end
 
@@ -1386,6 +1468,17 @@ local evalOps = {
 		return c
 	end,
 
+	assign = function( a, val )
+		if a.ref then
+			local x = a.ref.var.val
+			local path = a.ref.path
+			for i=1,#path-1 do
+				x = x[a.ref.path[i]]
+			end
+			x[ path[#path] ] = val.val
+		else
+		end
+	end,
 	eq = function( a, b, lineNum )
 		error"not implemented"
 	end
@@ -1477,31 +1570,31 @@ function _evaluate( postfix, prgmState, i )
 		elseif step.op == "=" then --copy ref/assign
 			local b = table.remove( stack )
 			local a = stack[#stack]
-			a.val = b.val
+			evalOps.assign( a, b )
 
 		elseif step.op == "+=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			local c = evalOps.add( a, b, lineNum )
-			a.val = c.val
+			evalOps.assign( a, c )
 			
 		elseif step.op == "-=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			local c = evalOps.sub( a, b, lineNum )
-			a.val = c.val
+			evalOps.assign( a, c )
 
 		elseif step.op == "/=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			local c = evalOps.div( a, b, lineNum )
-			a.val = c.val
+			evalOps.assign( a, c )
 
 		elseif step.op == "*=" then
 			local b = table.remove( stack )
 			local a = stack[#stack]
 			local c = evalOps.mult( a, b, lineNum )
-			a.val = c.val
+			evalOps.assign( a, c )
 
 		elseif step.op == "." then
 			local b = table.remove( stack )
@@ -1541,6 +1634,7 @@ function _evaluate( postfix, prgmState, i )
 					end
 					val = _wrapVal( val, type(val)=="table" and ("vec"..#val) or nil )
 				end
+				val.ref = {var=var,index = args}
 				table.insert( stack, val )
 			else --regular call
 				--if already done (previously called async)
@@ -1597,7 +1691,7 @@ function _evaluate( postfix, prgmState, i )
 		end
 
 		i = i+1
-		if autoYield( _evaluate, postfix, prgmState, i ) then 
+		if autoYield( _evaluate,"_evaluate", postfix, prgmState, i ) then 
 			return false 
 		end
 	end
@@ -1639,6 +1733,7 @@ function _doStep( inputs, prgmState )
 		end
 		local ty = globals[ step.name ].type
 		local v = vars[ step.name ]
+		if not inputs[ step.name ] then rerr( step.line, "Missing input '"..step.name.."'") end
 		v.val = _typeCheck( inputs[ step.name ], ty, step.name, step.line )
 		v.val.type = nil --only used while inputing, type stored in v
 		if ty:sub(1,3) == "vec" then
@@ -1858,7 +1953,7 @@ function _run( prgmName, main, inputs, prgmState )
 			end
 
 			cs[#cs].setStepIndex( nextIndex )
-			if autoYield( _run, prgmName, main, inputs, prgmState ) then return false end
+			if autoYield( _run,"_run-init", prgmName, main, inputs, prgmState ) then return false end
 		end
 		prgmState.init = true
 		prgmState.inst = prgm.functions[ main ].instructions
@@ -1877,7 +1972,7 @@ function _run( prgmName, main, inputs, prgmState )
 			end
 
 			cs[#cs].setStepIndex( nextIndex )
-			if autoYield( _run, prgmName, inputs, prgmState ) then return false end
+			if autoYield( _run,"_run-main", prgmName, inputs, prgmState ) then return false end
 		end
 	end
 
@@ -1952,34 +2047,74 @@ function loop()
 		output( BUSY, 1 )
 	end
 	while #unfinished > 0 and timeout > 0 do
-		local uf = table.remove( unfinished, 1 )
+		local uf = table.remove( unfinished )
 		if not uf.func( table.unpack( uf.args ) ) then break end
 	end
 	if #unfinished == 0 and BUSY then
 		BUSY = false
 		output( BUSY, 1 )
 	end
-	output( false, 1 )
+	
 end
 
 --public interfaces
 
+--not used
 function setProp()
-	local name, val = V1, V2
-	INPUTS[ name ] = _parseProp( v2 )
+	local name, val = read_var"name", read_var"v1"
+	INPUTS[ name ] = _parseProp( val )
 end
 
+--not used
 function clearProps()
 	INPUTS = {}
 end
 
-function compile()
-	 local source, programName = V1, V2
-	_compile( source, programName )
+function compile( source, programName, main )
+	 source, programName, main = 
+	 		source or read_var"v1",
+			programName or read_var"name",
+			main or read_var"v2"
+	_compile( source, programName, main )
+end
+
+local function _inputVec( size )
+end
+local function _inputMat( size )
+end
+
+function inputVec2()
+	_inputVec( 2 )
+end
+
+function inputVec3()
+	_inputVec( 3 )
+end
+
+function inputVec4()
+	_inputVec( 4 )
+end
+
+function inputMat2_2()
+end
+
+function inputMat3_3()
+end
+
+function inputMat4_4()
+end
+
+function inputTex()
+end
+
+function inputStr()
+end
+
+function inputBool()
 end
 
 function transfer(p1, p2)
-	local programName1, programName2 = p1 or V1, p2 or V2
+	local programName1, programName2 = p1 or read_var"v1", p2 or V2
 	local prgm1 = programs[ programName1 ]
 	local prgm2 = programs[ programName2 ]
 	for name, val in pairs(prgm1.outputs) do
@@ -1987,140 +2122,232 @@ function transfer(p1, p2)
 	end
 end
 
-function run()
-	local programName, functionName = V1, V2
-	_run( programName, functionName, INPUTS )
-end
-
---TODO remove, shading needs interpolation between steps
-function shade( state )
-	local vertexShaderProgram = V1
-	local fragmentShaderProgram = V2
-	local x,y,z,u,v = V3,V4,V5,V6 or 0,V7 or 0
-
-	state = state or {
-		stage = "init-1",
-		vert = programs[ vertexShaderProgram ],
-		frag = programs[ fragmentShaderProgram ]
-	}
-
-	if state.stage == "init-1" then
-		INPUTS.pos      = linalg._emptyVector(3)
-		INPUTS.texCoord = linalg._emptyVector(2)
+function run( programName )
+	local programName = programName or read_var"name"
+	local prgm = programs[programName]
+	if prgm.main == "vert" then
 		
-		INPUTS.pos.val = {x,y,z}
-		if not state.vert then error("couldn't find vertex shader '"..vertexShaderProgram.."'") end
-		if not state.frag then error("couldn't find fragment shader '"..fragmentShaderProgram.."'") end
-
-		state.vert.RESULT = nil
-		state.vert.ERROR = nil
-		state.frag.RESULT = nil
-		state.frag.ERROR = nil
-	end
-
-	if state.stage == "init-2" then
-		-- state.itter = state.itter or inputPropCSV:gmatch"[^,]+"
-		-- while true do
-		-- 	local prop = state.itter()
-		-- 	if not prop then break end
-		-- 	INPUTS[ prop ] = _parseProp( prop )
-		-- 	if autoYield( shade, state ) then return end
-		-- end
-		-- state.itter = nil
-		state.stage = "vertex-launch"
-	end
-
-	if state.stage == "vertex-launch" then
-		_run( vertexShaderProgram, "vert", INPUTS )
-		state.stage = "vertex-check"
-	end
-
-	if state.stage == "vertex-check" then
-		if state.vert.RESULT then 
-			state.stage = "transfer"
-		elseif state.vert.ERROR then
-			return --exit
-		else
-			yield( shade, state )
-		end
-	end
+		_runVert( programName )
 		
-	if state.stage == "transfer" then
-		transfer( vertexShaderProgram, fragmentShaderProgram )
-		state.stage = "fragment-launch"
-		if autoYield( shade, state ) then return end
+	elseif prgm.main == "frag" then
+
+		_runFrag( programName )
+
+	else
+		_run( programName, prgm.main, INPUTS )
 	end
 	
-	if state.stage == "fragment-launch" then
-		_run( fragmentShaderProgram, "frag", INPUTS )
-		state.stage = "fragment-check"
-	end
+end
 
-	if state.stage == "fragment-check" then
-		if state.frag.RESULT then 
-			state.stage = "done"
-		elseif state.frag.ERROR then
-			return --exit
-		else
-			yield( shade, state )
+function _runVert( programName, state )
+	state = state or {
+		step = "init",
+		vertexID = 1
+	}
+	local prgm = programs[ programName ]
+	while vertexID <= 3 do
+		if state.step == "init" then
+			prgm.verts = {
+				linalg.newVector(3),
+				linalg.newVector(3),
+				linalg.newVector(3)
+			}
+			for i=1,3 do
+				prgm.verts[i].val[1] = read_var("x"..i)
+				prgm.verts[i].val[2] = read_var("y"..i)
+				prgm.verts[i].val[3] = read_var("z"..i)
+			end
+			state.step = "transform"
+			
+			if autoYield( _runVert,"_runVert-init", state ) then return end
 		end
-	end
 
-	if state.stage == "done" then
-		local r = state.frag.RESULT
-		for i=1,4 do
-			output(r.val[i], i+1)
+		if state.step == "transform" then
+			INPUTS.pos = state.verts[ state.vertexID ]
+			state.step = "transform"
+			prgm.RESULT = nil
+
+			_run(programName, prgm.main, INPUTS)
+			state.step = "result"
+			if autoYield( _runVert,"_runVert-transform", state ) then return end
 		end
-		trigger( 8 )
+
+		if state.step == "result" then
+			if prgm.RESULT then
+				prgm.verts[ state.vertexID ] = prgm.RESULT
+				state.vertexID = state.vertexID + 1
+			else
+				yield( _runVert,"_runVert-result", state )
+				return
+			end
+		end
+
+		if autoYield( _runVert,"_runVert", state ) then return end
 	end
 end
+
+function _runFrag( programName, state )
+	state = state or {
+		step = "init"
+	}
+	
+	if state.step == "init" then
+		
+	end
+end
+
+-- --TODO remove, shading needs interpolation between steps
+-- function shade( state )
+-- 	local vertexShaderProgram = V1
+-- 	local fragmentShaderProgram = V2
+-- 	local x,y,z,u,v = V3,V4,V5,V6 or 0,V7 or 0
+
+-- 	state = state or {
+-- 		stage = "init-1",
+-- 		vert = programs[ vertexShaderProgram ],
+-- 		frag = programs[ fragmentShaderProgram ]
+-- 	}
+
+-- 	if state.stage == "init-1" then
+-- 		INPUTS.pos      = linalg._emptyVector(3)
+-- 		INPUTS.texCoord = linalg._emptyVector(2)
+		
+-- 		INPUTS.pos.val = {x,y,z}
+-- 		if not state.vert then error("couldn't find vertex shader '"..vertexShaderProgram.."'") end
+-- 		if not state.frag then error("couldn't find fragment shader '"..fragmentShaderProgram.."'") end
+
+-- 		state.vert.RESULT = nil
+-- 		state.vert.ERROR = nil
+-- 		state.frag.RESULT = nil
+-- 		state.frag.ERROR = nil
+-- 	end
+
+-- 	if state.stage == "init-2" then
+-- 		-- state.itter = state.itter or inputPropCSV:gmatch"[^,]+"
+-- 		-- while true do
+-- 		-- 	local prop = state.itter()
+-- 		-- 	if not prop then break end
+-- 		-- 	INPUTS[ prop ] = _parseProp( prop )
+-- 		-- 	if autoYield( shade, state ) then return end
+-- 		-- end
+-- 		-- state.itter = nil
+-- 		state.stage = "vertex-launch"
+-- 	end
+
+-- 	if state.stage == "vertex-launch" then
+-- 		_run( vertexShaderProgram, "vert", INPUTS )
+-- 		state.stage = "vertex-check"
+-- 	end
+
+-- 	if state.stage == "vertex-check" then
+-- 		if state.vert.RESULT then 
+-- 			state.stage = "transfer"
+-- 		elseif state.vert.ERROR then
+-- 			return --exit
+-- 		else
+-- 			yield( shade, state )
+-- 		end
+-- 	end
+		
+-- 	if state.stage == "transfer" then
+-- 		transfer( vertexShaderProgram, fragmentShaderProgram )
+-- 		state.stage = "fragment-launch"
+-- 		if autoYield( shade, state ) then return end
+-- 	end
+	
+-- 	if state.stage == "fragment-launch" then
+-- 		_run( fragmentShaderProgram, "frag", INPUTS )
+-- 		state.stage = "fragment-check"
+-- 	end
+
+-- 	if state.stage == "fragment-check" then
+-- 		if state.frag.RESULT then 
+-- 			state.stage = "done"
+-- 		elseif state.frag.ERROR then
+-- 			return --exit
+-- 		else
+-- 			yield( shade, state )
+-- 		end
+-- 	end
+
+-- 	if state.stage == "done" then
+-- 		local r = state.frag.RESULT
+-- 		for i=1,4 do
+-- 			output(r.val[i], i+1)
+-- 		end
+-- 		trigger( 8 )
+-- 	end
+-- end
 
 
 -- ----------------------------------------------------------------------------
 -- -- vs code only ------------------------------------------------------------
 -- ----------------------------------------------------------------------------
--- setup()
+-- local fakeVars = {}
+-- function read_var( x )
+-- 	return fakeVars[ x ]
+-- end
+function output( val, pin )
+	print(("[OUT] %d -> %s"):format(pin, tostring(val)))
+end
+setup()
 
--- --simulate command
--- print"COMPILE VERT"
--- _compile( vert, "vert1" )
--- repeat
--- 	loop()
--- until #unfinished == 0
+--simulate command
+print"COMPILE Camera"
+_compile( makeCam, "makeCam" )
+repeat
+	loop()
+until #unfinished == 0
+
+print"COMPILE VERT"
+_compile( vert, "vert1" )
+repeat
+	loop()
+until #unfinished == 0
 
 
--- print"COMPILE FRAG"
--- _compile( frag, "frag1" )
--- repeat
--- 	loop()
--- until #unfinished == 0
+print"COMPILE FRAG"
+_compile( frag, "frag1" )
+repeat
+	loop()
+until #unfinished == 0
+
+print"RUN makeCam"
+_run("makeCam", "cam",{
+	fovWidth = _wrapVal(90),
+	fovHeight = _wrapVal(90),
+	pos = {0,0,10, type="vec3"},
+	rot = {0,0,0, type="vec3"},
+	near = _wrapVal( .1 ),
+	far = _wrapVal( 50 )
+})
 
 
--- print"RUN VERT"
--- --simulate command
--- _run( "vert1", "vert", {
--- 	pos = {-.5,-.5, 0, type="vec3"},
--- 	--object transform
--- 	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1},  type="mat4_4"}, --identity
--- 	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1},  type="mat4_4"}, --+10 z
--- })
--- repeat
--- 	loop()
--- until #unfinished == 0
--- --TODO store RESULT in program instead
--- --TODO `transfer` copy `out` values from `prgm1` to `prgm2`
+print"RUN VERT"
+--simulate command
+_run( "vert1", "vert", {
+	pos = {-.5,-.5, 0, type="vec3"},
+	--object transform
+	transform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1},  type="mat4_4"}, --identity
+	camera = {{1,0,0,0},{0,1,0,0},{0,0,1,10},{0,0,0,1},  type="mat4_4"}, --+10 z
+})
+repeat
+	loop()
+until #unfinished == 0
+--TODO store RESULT in program instead
+--TODO `transfer` copy `out` values from `prgm1` to `prgm2`
 
--- print"RUN FRAG"
--- _run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
--- 	color = { 1, 0, 0,type="vec3"}, --red
--- 	lightPos = {0, 100, 0,type="vec3"},
--- 	camPos = {0, 0, 10, type="vec3"},
--- 	norm = {0, 1, 0,type="vec3"},
--- 	vertPos= {0, 0, 0,type="vec3"},
--- } )
--- repeat
--- 	loop()
--- until #unfinished == 0
+print"RUN FRAG"
+_run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
+	color = { 1, 0, 0,type="vec3"}, --red
+	lightPos = {0, 100, 0,type="vec3"},
+	camPos = {0, 0, 10, type="vec3"},
+	norm = {0, 1, 0,type="vec3"},
+	vertPos= {0, 0, 0,type="vec3"},
+} )
+repeat
+	loop()
+until #unfinished == 0
 
--- print"Done!"
--- print( programs.frag1.RESULT )
+print"Done!"
+print( programs.frag1.RESULT )
