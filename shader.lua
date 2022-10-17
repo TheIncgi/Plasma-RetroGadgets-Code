@@ -16,10 +16,10 @@ local makeCam = [[
 	out mat4_4 cam;
 
 	//source https://stackoverflow.com/a/62243585/11295774
-	void cam() {
+	void mkCam() {
 		cam = mat(
-			vec( cot(fovWidth)/2, 0, 0, 0 ),
-			vec( 0, cot(fovHeight)/2, 0, 0 ),
+			vec( cot(rad(fovWidth))/2, 0, 0, 0 ),
+			vec( 0, cot(rad(fovHeight))/2, 0, 0 ),
 			vec( 0, 0, far/(far-near), 0 ), //changed to 0, z pos
 			vec( 0, 0, far*near / (near-far), 0 )
 		);
@@ -27,9 +27,9 @@ local makeCam = [[
 		cam = rotate( cam, vec(1,0,0), rad( rot.y ) ); //pitch
 		cam = rotate( cam, vec(0,1,0), rad( rot.x ) ); //yaw (Y+ is up)
 
-		cam[4,1] = pos.x;
-		cam[4,2] = pos.y;
-		cam[4,3] = pos.z;
+		cam[1,4] = pos.x;
+		cam[2,4] = pos.y;
+		cam[3,4] = pos.z;
 	}
 ]]
 
@@ -191,7 +191,10 @@ local function _makeGlobals()
 
 	--co tangent
 	g.cot = function( angleRadians )
-			return true, _wrapVal( 1 / math.tan( angleRadians ), "num" )
+		if angleRadians.type ~= "num" then
+			error("Expected number, got "..angleRadians.type)
+		end
+		return true, _wrapVal( 1 / math.tan( angleRadians.val ), "num" )
 	end
 
 	g.rotateMatrix = linalg.rotateMatrix
@@ -675,6 +678,8 @@ function _chunkType( text )
 		return false
 	elseif text=="\n" then
 		return "line"
+	elseif text:match"//.+" then 
+		return false
 	end
 	for _, name in ipairs{ "op","num","var" } do
 		local group = patterns[ name ]
@@ -694,8 +699,8 @@ end
 
 unfinished = {}
 local function callYielding( resumeSelf, call )
-	local nuf = #unfinished
-	local rets = {call.func(call.args)}
+	local nuf = #unfinished+1
+	local rets = {call.func( table.unpack(call.args))}
 	if rets[1] then
 		return table.unpack( rets )
 	end
@@ -770,28 +775,31 @@ function _tokenize( src, state, quoting )
 end
 
 function _computeLineNums( state, index, lineNum, comment )
+	state._computeLines = state._computeLines or {
+		comment = false,
+		lineNum = 1,
+		index = 1
+	}
 	local tokens = state.tokens
-	comment = comment or false
 	state.lineNums = state.lineNums or {}
-	lineNum = lineNum or 1
-	index = index or 1
+	index = state._computeLines.index
 	
-	while tokens[ index ] do
-		local token  = tokens[index]
+	while tokens[ state._computeLines.index ] do
+		local token  = tokens[state._computeLines.index]
 		
 		if token == "\n" then
-			comment = false
-			lineNum = lineNum + 1
-			table.remove( tokens, index )
-		elseif comment or token == "//" then
-			comment = true
-			table.remove( tokens, index )
+			state._computeLines.comment = false
+			state._computeLines.lineNum = state._computeLines.lineNum + 1
+			table.remove( tokens, state._computeLines.index )
+		elseif state._computeLines.comment or token == "//" then
+			state._computeLines.comment = true
+			table.remove( tokens, state._computeLines.index )
 		else
-			state.lineNums[ index ] = lineNum
-			index = index + 1
+			state.lineNums[ state._computeLines.index ] = state._computeLines.lineNum
+			state._computeLines.index = state._computeLines.index + 1
 		end
 		
-		if autoYield( _computeLineNums,"_computeLineNums", state, index, lineNum, comment ) then 
+		if autoYield( _computeLineNums,"_computeLineNums", state ) then 
 			return false
 		end
 	end
@@ -1195,16 +1203,26 @@ function _buildInstructions( state, index )
 
 		else --statment (variable/function call)
 			local endWith = false
-			if (not t2:match"[=-/*]?=") and t2 ~= "(" then
-				cerr(lineNum,"expected assignment or call")
-			end
-			local eval,lastToken = _evalInstr( state, index )
+			-- if (not t2:match"[=-/*]]?=") and t2 ~= "(" then
+			-- 	cerr(lineNum,"expected assignment or call")
+			-- end
+			local eval,lastToken = callYielding({
+				func=_buildInstructions,
+				label="_buildInstructions",
+				args = {state, index}
+			},{
+				func=_evalInstr,
+				args={state, index}
+			})
+			
 			if eval then
 				eval.stepIndex = #inst+1
 				eval.line = lineNum
 				table.insert( inst, eval )
 				index = lastToken + 1
-			end --else needs more itteration
+			else --else needs more itteration
+				return false
+			end
 		end
 		
 		if autoYield( _buildInstructions,"_buildInstructions", state, index ) then return false end
@@ -1238,24 +1256,40 @@ function _compile( src, prgmName, main, state )
 		} ) then
 			state.step = "computeLines"
 		else
-			return
+			return false
 		end
 		
 	end
 	
 	if state.step == "computeLines" then
-		if _computeLineNums( state ) then
+		if callYielding( {
+			func=_compile,
+			label="_compile-computeLines",
+			args={src,prgmName,main,state}
+		},{
+			func=_computeLineNums,
+			args={ state }
+		}) then
 			state.step = "buildInstructions"
+		else
+			return false
 		end
-		if autoYield( _compile, "_compile-computeLines", src, prgmName, main, state ) then return false end
 	end
 	
 	if state.step == "buildInstructions" then
-		if _buildInstructions( state ) then
+		if callYielding({
+			func=_compile,
+			label="_compile-computeLines",
+			args={src,prgmName,main,state}
+		},{
+			func=_buildInstructions,
+			args = {state}
+		}) then
 			programs[ prgmName ] = state
 			return true
+		else
+			return false
 		end
-		if autoYield( _compile, "_compile-buildInstructions", src, prgmName, main, state ) then return false end
 	end
 end
 
@@ -1471,12 +1505,13 @@ local evalOps = {
 	assign = function( a, val )
 		if a.ref then
 			local x = a.ref.var.val
-			local path = a.ref.path
-			for i=1,#path-1 do
-				x = x[a.ref.path[i]]
+			local index = a.ref.index
+			for i=1,#index-1 do
+				x = x[a.ref.index[i]]
 			end
-			x[ path[#path] ] = val.val
+			x[ index[#index] ] = val.val
 		else
+			a.val = val.val
 		end
 	end,
 	eq = function( a, b, lineNum )
@@ -1484,6 +1519,7 @@ local evalOps = {
 	end
 }
 
+--@yielding
 function _evaluate( postfix, prgmState, i )
 
 	local env = prgmState.callStack[#prgmState.callStack]
@@ -1659,7 +1695,7 @@ function _evaluate( postfix, prgmState, i )
 					local done, c = env.get( fName )( table.unpack(args) )
 
 					if not done then --100% of shader functions 
-						return false --needs continuation
+						return false --needs continuation, handled in caller
 					end
 					if not c.type then
 						local t;
@@ -1700,6 +1736,7 @@ function _evaluate( postfix, prgmState, i )
 	return true, table.unpack( stack )
 end
 
+--@yielding
 function _doStep( inputs, prgmState )
 	--DECLARE, INPUT, EVAL, IF, FOR, WHILE, RETURN, BREAK, CONTINUE
 	local steps = prgmState.inst
@@ -1713,19 +1750,20 @@ function _doStep( inputs, prgmState )
 		if vars[ step.name ] then
 			rerr( step.line, "var "..step.name.." is already defined in this scope")
 		else
-			vars[ step.name ] = {type=step.type, name=step.name} --val=nil
-			local v = vars[step.name]
-			local t = v.type:sub(1,3)
+			local vt = step.type
+			local t = vt:sub(1,3)
 			if t == "vec" then
-				v.size = tonumber( v.type:sub(4) )
-			elseif t == "mat" then
-				v.rows = tonumber(v.type:match"^mat([0-9]+)")
-				v.cols = tonumber(v.type:match"_([0-9]+)$")
-			elseif t == "tex" then
-
+				vars[ step.name ] = linalg.newVector( tonumber( vt:sub(4) ) )
+			elseif t=="mat" then
+				local rows = tonumber( vt:match"^mat([0-9]+)" )
+				local cols = tonumber( vt:match"_([0-9]+)$" )
+				vars[ step.name ] = linalg.newMatrix( rows, cols )
+			-- elseif t=="tex" then
+			else
+				vars[ step.name ] = {type=step.type, name=step.name} --val=nil
 			end
 		end
-		return stepIndex + 1
+		return true, stepIndex + 1
 
 	elseif step.op == "INPUT" then
 		if not globals[step.name] then
@@ -1750,19 +1788,51 @@ function _doStep( inputs, prgmState )
 			end
 		end
 		
-		return stepIndex + 1
+		return true,stepIndex + 1
 
 	elseif step.op == "EVAL" then
-		local done = _evaluate( step.postfix, prgmState )
+		local done = callYielding({
+			func=_doStep,
+			label="_doStep",
+			args={inputs, prgmState}
+		},{
+			func=_evaluate,
+			args={step.postfix, prgmState}
+		})
+		
+		return done, stepIndex + (done and 1 or 0)
 		
 	elseif step.op == "SCOPE_UP" then
 		_insertCallStack( callStack, true )
 
 	elseif step.op == "SCOPE_DOWN" then
-		table.remove( callStack ) --pop
+		if callStack.onEndBlock then
+			local done, to = callYielding({
+				func=_doStep,
+				label="_doStep",
+				args={inputs, prgmState}
+			},{
+				func=callStack.onEndBlock,
+				args={}
+			})
+			if not done then return false, stepIndex end
+			table.remove( callStack ) --pop
+			return true, to
+		else
+			table.remove( callStack ) --pop
+		end
 
 	elseif step.op == "IF" then
-		local done, val = _evaluate( step.postfix, prgmState )
+		local done, val = callYielding({
+			func=_doStep,
+			label="_doStep",
+			args={inputs, prgmState}
+		},{
+			func=_evaluate,
+			args={ step.postfix, prgmState }
+		})
+		if not done then return false, stepIndex end
+
 		local truthy = _truthy( val )
 		step.ran = truthy --used by else/elseif
 		local nextStep = steps[step.skip]
@@ -1774,27 +1844,74 @@ function _doStep( inputs, prgmState )
 		if truthy then
 			prgmState.lvl = prgmState.lvl + 1
 		else
-			return step.skip
+			return true, step.skip
 		end
 
 	elseif step.op == "FOR" then
-		local done, init = _evaluate( step.init, prgmState )
+		if not callStack.forInit then
+			local done, init = callYielding({
+				func=_doStep,
+				label="_doStep",
+				args={inputs, prgmState}
+			},{
+				func=_evaluate,
+				args={ step.init, prgmState }
+			})
+			if not done then return false, stepIndex end
+			callStack.forInit = true
+		end
 		local nx = prgmState.stepIndex + 1
 
-		callStack.onEndBlock = function()
-			local test = _evalInstr( step.test, prgmState )
-			if _truthy( test ) then
-				local done = _evaluate( step.inc, prgmState ) --@ end of block
-				return nx
-			else
-				return step.skip
+		local testDone,testVal callYielding({
+			func=_doStep,
+			label="_doStep",
+			args={inputs, prgmState}
+		},{
+			func=_evaluate,
+			args={ step.test, prgmState }
+		})
+		if not testDone then return false, stepIndex end
+
+		callStack.forInit = nil
+		if not _truthy( testVal ) then
+			return true, step.skip
+		else
+			callStack.onEndBlock = function( done, test )
+				if not done then
+					done, test =callYielding({
+						func=callStack.onEndBlock, --upval to this cs, but checked when called, should exist
+						label="for-onEndBlock-test",
+						args={}
+					},{
+						func=_evaluate,
+						args={ step.test, prgmState }
+					}) 
+					if not done then return false end
+				end
+				if _truthy( test ) then
+					local done2 = callYielding({
+						func=callStack.onEndBlock,
+						label="for-onEndBlock-inc",
+						args={done, test}
+					},{
+						func=_evaluate,
+						args={ step.inc, prgmState }
+					})
+					if not done2 then return false end --@ end of block
+					return true,nx
+				else
+					return true,step.skip
+				end
 			end
+
+			return true,stepIndex + 1
 		end
+		
 	elseif step.op == "ELSE" then
 		if step.ran then --previous block ran
-			return step.skip
+			return true, step.skip
 		else
-			return stepIndex + 1
+			return true, stepIndex + 1
 		end
 	elseif step.op == "ELSEIF" then
 		local nextStep = steps[step.skip]
@@ -1803,7 +1920,16 @@ function _doStep( inputs, prgmState )
 		if ran then
 			nxt = step.skip
 		else
-			local val = _evaluate( step.postfix, prgmState )
+			local done, val = callYielding({
+				func=_doStep,
+				label="_doStep",
+				args={inputs, prgmState}
+			},{
+				func=_evaluate,
+				args={ step.postfix, prgmState }
+			})
+			if not done then return false, stepIndex end
+
 			local truthy = _truthy( val )
 			ran = truthy
 
@@ -1818,20 +1944,36 @@ function _doStep( inputs, prgmState )
 			nextStep.ran = ran
 		end
 
-		return nxt
+		return true, nxt
 
 	elseif step.op == "WHILE" then
-		local val = _evaluate( step.postix, prgmState )
+		local val = callYielding({
+			func=_doStep,
+			label="_doStep",
+			args={inputs, prgmState}
+		},{
+			func=_evaluate,
+			args={ step.postfix, prgmState }
+		})
+		if not val then return false, stepIndex end
+
 		local truthy = _truthy( val )
 		
 		if truthy then
-			return stepIndex + 1
+			return true, stepIndex + 1
 		else
-			return step.skip
+			return true, step.skip
 		end
 
 	elseif step.op == "RETURN" then
-		local done, val = _evaluate( step.postfix, prgmState ) --only one return value used if multiple for some reason
+		local done, val = callYielding({
+			func=_doStep,
+			label="_doStep",
+			args={inputs, prgmState}
+		},{
+			func=_evaluate,
+			args={ step.postfix, prgmState }
+		}) --only one return value used if multiple for some reason
 		if done then
 			if callStack.setCallReturn then
 				callStack.setCallReturn( val ) --sets in parent cs
@@ -1843,25 +1985,34 @@ function _doStep( inputs, prgmState )
 			end
 			return --
 		end
-		return stepIndex
+		return false, stepIndex
 
 	elseif step.op == "BREAK" then
 		local loopInst = step.loopInst
 		if not loopInst.skip then rerr( step.line, "break not in loop") end
-		return loopInst.skip
+		return true, loopInst.skip
 		
 	elseif step.op == "CONTINUE" then
 		local loopInst = step.loopInst
 		if not loopInst.continue then rerr( step.line, "continue not in loop") end
-		return 
-				loopInst.onEndBlock 
-			and loopInst.onEndBlock() 
-			 or loopInst.skip
+		if loopInst.onEndBlock then
+			local done, to = callYielding({
+				func=_doStep,
+				label="_doStep-continue",
+				args={inputs,prgmState}
+			},{
+				func = loopInst.onEndBlock,
+				args = {}
+			})
+			if not done then return false, stepIndex end
+			return true, to
+		end
+		return true, loopInst.skip
 
 	else
 		rerr(step.line, "Unhandled op type '"..step.op.."'")
 	end
-	return stepIndex + 1
+	return true, stepIndex + 1
 end
 
 function _copyVar( var )
@@ -1945,15 +2096,23 @@ function _run( prgmName, main, inputs, prgmState )
 	--init steps
 	if not prgmState.init then
 		while prgmState.inst[ cs[#cs].getStepIndex() ] do
-			local ok, nextIndex = pcall( _doStep, inputs, prgmState )
+			local ok, stepDone, nextIndex = pcall(	callYielding, {
+					func=_run,
+					label="_run-init",
+					args={prgmName, main, inputs, prgmState}
+				}, {
+					func=_doStep,
+					args={inputs, prgmState}
+				})
 			
 			if not ok then
-				prgm.ERROR = nextIndex
-				error(nextIndex)
+				prgm.ERROR = stepDone
+				error(stepDone)
 			end
 
+			if not stepDone then return end
+
 			cs[#cs].setStepIndex( nextIndex )
-			if autoYield( _run,"_run-init", prgmName, main, inputs, prgmState ) then return false end
 		end
 		prgmState.init = true
 		prgmState.inst = prgm.functions[ main ].instructions
@@ -1964,15 +2123,23 @@ function _run( prgmName, main, inputs, prgmState )
 	--main call
 	if prgmState.init then
 		while prgmState.inst[ cs[#cs].getStepIndex() ] do
-			local ok, nextIndex = pcall( _doStep, inputs, prgmState )
-			
+			local ok, stepDone, nextIndex = pcall(	callYielding, {
+				func=_run,
+				label="_run-init",
+				args={prgmName, main, inputs, prgmState}
+			}, {
+				func=_doStep,
+				args={inputs, prgmState}
+			})
+		
 			if not ok then
-				prgm.ERROR = nextIndex
-				error(nextIndex)
+				prgm.ERROR = stepDone
+				error(stepDone)
 			end
 
+			if not stepDone then return end
+
 			cs[#cs].setStepIndex( nextIndex )
-			if autoYield( _run,"_run-main", prgmName, inputs, prgmState ) then return false end
 		end
 	end
 
@@ -2313,7 +2480,7 @@ repeat
 until #unfinished == 0
 
 print"RUN makeCam"
-_run("makeCam", "cam",{
+_run("makeCam", "mkCam",{
 	fovWidth = _wrapVal(90),
 	fovHeight = _wrapVal(90),
 	pos = {0,0,10, type="vec3"},
