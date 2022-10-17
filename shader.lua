@@ -47,11 +47,12 @@ local vert = [[
 ]]
 
 local frag = [[
-	in vec3 color;
-	in vec3 lightPos;
+	in vec3 color;    //user value
+	in vec3 lightPos; // user value
 	in vec3 camPos;   //computed in vert shader
-	in vec3 norm;
-	in vec3 vertPos;
+	in vec3 norm;    //special to fragment
+	in vec3 vertPos; //special to fragment
+	in vec2 uvPos;   //special to fragment
 	
 	
 	num global_offset( num v ) {
@@ -1890,7 +1891,7 @@ function _doStep( inputs, prgmState )
 	local step = steps[ stepIndex ]
 	local vars = callStack.vars
 
-	print(step.op)
+	--print(step.op)
 	if step.op == "DECLARE" then
 		if vars[ step.name ] then
 			rerr( step.line, "var "..step.name.." is already defined in this scope")
@@ -2403,9 +2404,27 @@ function compile( source, programName, main )
 	_compile( source, programName, main )
 end
 
-local function _inputVec( size )
+local function _inputVec( size, offset )
+	local name = read_var"name"
+	if type(name)~="string" then error"invalid name" end
+	local vec = linalg.newVector( size )
+	offset = offset or 0
+	for i=1, size do
+		vec.val[i] = read_var("v"..(i+offset)) or 0
+	end
+	INPUTS[ name ] = vec
 end
-local function _inputMat( size )
+
+local function _inputMat( row, col, offset )
+	local name = read_var"name"
+	if type(name)~="string" then error"invalid name" end
+	local mat = linalg._emptyMatrix(row, col)
+	for r=1, mat.rows do
+		for c=1, mat.cols do
+			mat.val[r][c] = read_var("v"..((c-1)*col + r + offset) )
+		end
+	end
+	INPUTS[ name ] = vec
 end
 
 function inputVec2()
@@ -2421,29 +2440,74 @@ function inputVec4()
 end
 
 function inputMat2_2()
+	_inputMat( 2, 2 )
 end
 
 function inputMat3_3()
+	_inputMat( 3, 3 )
 end
 
 function inputMat4_4()
+	_inputMat( 4, 4 )
 end
 
 function inputTex()
+	local name = read_var"name"
+	if type(name)~="string" then
+		error"invalid name"
+	end
+
+	local channels = read_var"v2"
+	if type(channels)~="number" or channels < 1 then
+		error"invalid channel count"
+	end
+
+	INPUTS[ name ] = _wrapVal( read_var"v1" or "", "tex"..channels)
 end
 
 function inputStr()
+	local name = read_var"name"
+	if type(name)~="string" then
+		error"invalid name"
+	end
+
+	local str = read_var"v1" or ""
+	if type(str) ~= "string" then
+		error"string expected"
+	end
+
+	INPUTS[ name ] = _wrapVal( str )
 end
 
 function inputBool()
+	local name = read_var"name"
+	if type(name)~="string" then
+		error"invalid name"
+	end
+
+	local bool = not not read_var"v1"
+
+	INPUTS[ name ] = _wrapVal( bool )
 end
 
 function transfer(p1, p2)
-	local programName1, programName2 = p1 or read_var"v1", p2 or V2
+	local programName1, programName2 = p1 or read_var"v1", p2 or read_var"v2"
 	local prgm1 = programs[ programName1 ]
 	local prgm2 = programs[ programName2 ]
 	for name, val in pairs(prgm1.outputs) do
 		INPUTS[ name ] = val
+	end
+	if prgm1.verts then
+		prgm2.verts = {}
+		for i=1,#prgm1.verts do
+			prgm2.verts[i] = linalg.copyVector( prgm1.verts[i] )
+		end
+	end
+	if prgm1.uvs then
+		prgm2.uvs = {}
+		for i=1,#prgm1.uvs do
+			prgm2.uvs[i] = linalg.copyVector( prgm1.uvs[i] )
+		end
 	end
 end
 
@@ -2477,10 +2541,17 @@ function _runVert( programName, state )
 				linalg.newVector(3),
 				linalg.newVector(3)
 			}
+			prgm.uvs = {
+				linalg.newVector(2),
+				linalg.newVector(2),
+				linalg.newVector(2)
+			}
 			for i=1,3 do
-				prgm.verts[i].val[1] = read_var("x"..i)
-				prgm.verts[i].val[2] = read_var("y"..i)
-				prgm.verts[i].val[3] = read_var("z"..i)
+				prgm.verts[i].val[1] = read_var("posx"..i)
+				prgm.verts[i].val[2] = read_var("posy"..i)
+				prgm.verts[i].val[3] = read_var("posz"..i)
+				prgm.uvs[i].val[1] = read_var("posu"..i)
+				prgm.uvs[i].val[2] = read_var("posv"..i)
 			end
 			state.step = "transform"
 			
@@ -2501,6 +2572,7 @@ function _runVert( programName, state )
 			if prgm.RESULT then
 				prgm.verts[ state.vertexID ] = prgm.RESULT
 				state.vertexID = state.vertexID + 1
+				state.step = "transform"
 			else
 				yield( _runVert,"_runVert-result", state )
 				return
@@ -2509,15 +2581,63 @@ function _runVert( programName, state )
 
 		if autoYield( _runVert,"_runVert", state ) then return end
 	end
+
+	for i=1, 3 do
+		write_var( prgm.verts[i].val[1], "out"..i*3    )
+		write_var( prgm.verts[i].val[2], "out"..i*3 +1 )
+		write_var( prgm.verts[i].val[3], "out"..i*3 +2 )
+	end
+	trigger(8)
+
 end
 
 function _runFrag( programName, state )
 	state = state or {
 		step = "init"
 	}
+	local prgm = programs[ programName ]
 	
 	if state.step == "init" then
-		
+		local fac1 = read_var"v1" or 0
+		local fac2 = read_var"v2" or 0
+		local fac3 = read_var"v3" or 0
+		if not prgm.verts then
+			error"no verts from transfer"
+		end
+		local barPos = linalg.newVector(3)
+		local barUV = linalg.newVector(2)
+		for i=1,3 do
+			barPos.val[i] = barPos.val[i] + prgm.verts[i].val[i] / 3
+		end
+		for i=1,2 do
+			barUV.val[i] = barUV.val[i] + prgm.uvs[i].val[i] / 3
+		end
+		INPUTS.vertPos = barPos
+		INPUTS.uvPos = barUV
+
+		state.step = "color"	
+		if autoYield( _runFrag,"_runFrag-init", state ) then return end
+	end
+
+	if state.step == "color" then
+		prgm.RESULT = nil
+
+		_run(programName, prgm.main, INPUTS)
+		state.step = "result"
+		if autoYield( _runFrag,"_runFrag-color", state ) then return end
+	end
+
+	if state.step == "result" then
+		if prgm.RESULT then
+			local r = prgm.RESULT
+			for i=1,4 do
+				write_var( r.val[i] or 0, "out"..i )
+			end
+			trigger( 8 )
+		else
+			yield( _runFrag,"_runFrag-result", state )
+			return
+		end
 	end
 end
 
@@ -2525,79 +2645,88 @@ end
 -- ----------------------------------------------------------------------------
 -- -- vs code only ------------------------------------------------------------
 -- ----------------------------------------------------------------------------
--- local fakeVars = {}
--- function read_var( x )
--- 	return fakeVars[ x ]
--- end
-function output( val, pin )
-	print(("[OUT] %d -> %s"):format(pin, tostring(val)))
+if io then
+	local fakeVars = {}
+	function read_var( x )
+		return fakeVars[ x ]
+	end
+	function write_var( val, name )
+		print(("[WRITE_VAR] %s -> %s"):format( tostring(val), name ))
+	end
+	function output( val, pin )
+		print(("[OUT] %s -> %d"):format(tostring(val), pin))
+	end
+	function trigger( pin )
+		print(("[TRIGGER] %d"):format(pin))
+	end
+	setup()
+
+
+	local vec = linalg.vec
+	local mat = linalg.mat
+	local w = _wrapVal
+	--simulate command
+	print"COMPILE Camera"
+	_compile( makeCam, "makeCam" )
+	repeat
+		loop()
+	until #unfinished == 0
+
+	print"COMPILE VERT"
+	_compile( vert, "vert1" )
+	repeat
+		loop()
+	until #unfinished == 0
+
+
+	print"COMPILE FRAG"
+	_compile( frag, "frag1" )
+	repeat
+		loop()
+	until #unfinished == 0
+
+	print"RUN makeCam"
+	_run("makeCam", "mkCam",{
+		fovWidth = w(90),
+		fovHeight = w(90),
+		pos = vec(w(0),w(0),w(10)),
+		rot = vec(w(0),w(0),w(0)),
+		near = w(.1),
+		far = w(50)
+	})
+
+	repeat
+		loop()
+	until #unfinished == 0
+
+	print"RUN VERT"
+	--simulate command
+
+	_run( "vert1", "vert", {
+		pos = vec(w(-.5),w(-.5), w(0)),
+		--object transform
+		transform = mat(vec(w(1),w(0),w(0),w(0)), vec(w(0),w(1),w(0),w(0)),vec(w(0),w(0),w(1),w( 0)), vec(w(0),w(0),w(0),w(1))), --identity
+		camera =    mat(vec(w(1),w(0),w(0),w(0)), vec(w(0),w(1),w(0),w(0)),vec(w(0),w(0),w(1),w(10)), vec(w(0),w(0),w(0),w(1))), --+10 z
+	})
+	repeat
+		loop()
+	until #unfinished == 0
+	--TODO store RESULT in program instead
+	--TODO `transfer` copy `out` values from `prgm1` to `prgm2`
+
+	print"RUN FRAG"
+	_run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
+		color    = vec( w(1), w(0), w(0) ), --red
+		lightPos = vec( w(0), w(100), w( 0) ),
+		camPos   = vec( w(0), w(  0), w(10) ),
+		norm     = vec( w(0), w(  1), w( 0) ),
+		vertPos  = vec( w(0), w(  0), w( 0) ),
+		uvPos    = vec( w(0), w(  0) ),
+	} )
+	repeat
+		loop()
+	until #unfinished == 0
+
+	print"Done!"
+	print( programs.frag1.RESULT )
 end
-setup()
-
-
-local vec = linalg.vec
-local mat = linalg.mat
-local w = _wrapVal
---simulate command
-print"COMPILE Camera"
-_compile( makeCam, "makeCam" )
-repeat
-	loop()
-until #unfinished == 0
-
-print"COMPILE VERT"
-_compile( vert, "vert1" )
-repeat
-	loop()
-until #unfinished == 0
-
-
-print"COMPILE FRAG"
-_compile( frag, "frag1" )
-repeat
-	loop()
-until #unfinished == 0
-
-print"RUN makeCam"
-_run("makeCam", "mkCam",{
-	fovWidth = w(90),
-	fovHeight = w(90),
-	pos = vec(w(0),w(0),w(10)),
-	rot = vec(w(0),w(0),w(0)),
-	near = w(.1),
-	far = w(50)
-})
-
-repeat
-	loop()
-until #unfinished == 0
-
-print"RUN VERT"
---simulate command
-
-_run( "vert1", "vert", {
-	pos = vec(w(-.5),w(-.5), w(0)),
-	--object transform
-	transform = mat(vec(w(1),w(0),w(0),w(0)), vec(w(0),w(1),w(0),w(0)),vec(w(0),w(0),w(1),w( 0)), vec(w(0),w(0),w(0),w(1))), --identity
-	camera =    mat(vec(w(1),w(0),w(0),w(0)), vec(w(0),w(1),w(0),w(0)),vec(w(0),w(0),w(1),w(10)), vec(w(0),w(0),w(0),w(1))), --+10 z
-})
-repeat
-	loop()
-until #unfinished == 0
---TODO store RESULT in program instead
---TODO `transfer` copy `out` values from `prgm1` to `prgm2`
-
-print"RUN FRAG"
-_run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
-	color    = vec( w(1), w(0), w(0) ), --red
-	lightPos = vec( w(0), w(100), w( 0) ),
-	camPos   = vec( w(0), w(  0), w(10) ),
-	norm     = vec( w(0), w(  1), w( 0) ),
-	vertPos  = vec( w(0), w(  0), w( 0) ),
-} )
-repeat
-	loop()
-until #unfinished == 0
-
-print"Done!"
-print( programs.frag1.RESULT )
