@@ -4,6 +4,10 @@
 --Oct 2022
 --Plasma Demo
 
+--todo copy function in shader for matrix/vector
+
+local TIMEOUT = 20 --loops before exit to continue next tick
+
 --test code
 local makeCam = [[
 	in num fovWidth;
@@ -13,29 +17,29 @@ local makeCam = [[
 	in vec3 pos;
 	in vec3 rot; //{yaw, pitch, roll}
 
-	out mat4_4 cam;
+	out mat4_4 camera;
 
 	//source https://stackoverflow.com/a/62243585/11295774
 	void mkCam() {
-		cam = mat(
+		camera = mat(
 			vec( cot(rad(fovWidth))/2, 0, 0, 0 ),
 			vec( 0, cot(rad(fovHeight))/2, 0, 0 ),
 			vec( 0, 0, far/(far-near), 0 ), //changed to 0, z pos
 			vec( 0, 0, far*near / (near-far), 0 )
 		);
-		cam = rotateMatrix( cam, vec(0,0,1), rad( rot.z ) ); //roll
-		cam = rotateMatrix( cam, vec(1,0,0), rad( rot.y ) ); //pitch
-		cam = rotateMatrix( cam, vec(0,1,0), rad( rot.x ) ); //yaw (Y+ is up)
+		camera = rotateMatrix( camera, vec(0,0,1), rad( rot.z ) ); //roll
+		camera = rotateMatrix( camera, vec(1,0,0), rad( rot.y ) ); //pitch
+		camera = rotateMatrix( camera, vec(0,1,0), rad( rot.x ) ); //yaw (Y+ is up)
 
-		cam[1,4] = pos.x;
-		cam[2,4] = pos.y;
-		cam[3,4] = pos.z;
+		camera[1,4] = pos.x;
+		camera[2,4] = pos.y;
+		camera[3,4] = pos.z;
 		return; //required in current version, no warnings though
 	}
 ]]
 
 local vert = [[
-	in vec3 pos;
+	in vec3 pos;   //special
 	in mat4_4 transform;
 	in mat4_4 camera;
 	out vec4 camPos;
@@ -118,6 +122,27 @@ local frag = [[
 -- ---------------------
 -- test code
 ----------------------------------------------------------------------------
+--allow multiple prints in 1 tick...
+_nativePrint = print
+PRINT = {"checking scrolling","a","b","c","d","e","f","g","h","i","j","k","l","m",} --used in loop
+print = function( ... )
+	local args = {...}
+	-- if #PRINT>0 then
+	-- 	table.insert(PRINT,"\n")
+	-- end
+	
+	for i=1,#args do 
+		table.insert(PRINT, tostring(args[i]))
+	end
+end
+
+--more stuff missing in moonsharp...
+if not pcall then
+	pcall = function( f,... )
+		return true, f( ... )
+	end
+end
+---------------------------------------------------------------------------
 local programs = {}
 --linear algebra lib, vectors and matrices
 local linalg = {}
@@ -170,6 +195,11 @@ local function _makeGlobals()
 			error("Expected number, got "..angleRadians.type)
 		end
 		return true, _wrapVal( 1 / math.tan( angleRadians.val ), "num" )
+	end
+
+	g.print = function( val )
+		_printVal( "DBUG: ", val )
+		return true
 	end
 
 	g.rotateMatrix = function(...) return true, linalg.rotateMatrix(...) end
@@ -600,10 +630,11 @@ function linalg.toString( val )
 	local v = tostring( val )
 	local t = val.type
 
-	if t == "vector" then
+	if t:sub(1,3) == "vec" then
 		local vec = val.val
-		v = ("<%d, %d, %d, %d>"):format( table.unpack(vec) )
-	elseif t == "matrix" then
+		
+		v = ("<%s>"):format( table.concat(vec,",") )
+	elseif t:sub(1,3) == "mat" then
 		local mat = val.val
 		v = {"\n"}
 		for i,row in ipairs( mat ) do
@@ -655,7 +686,7 @@ local patterns = {
 	op = { "^[()%{%}%[%]%%.%!%#%^%*%/%+%-%=%~%&|;,%<%>]+$" }
 }
 
-local TIMEOUT = 200 --loops before exit to continue next tick
+
 local keywords = {
 	["if"] = "control",
 	["else"] = "control",
@@ -746,6 +777,7 @@ function _chunkType( text )
 end
 
 unfinished = {}
+taskQueue = {}
 local function callYielding( resumeSelf, call )
 	local nuf = #unfinished+1
 	local rets = {call.func( table.unpack(call.args))}
@@ -756,7 +788,14 @@ local function callYielding( resumeSelf, call )
 	return table.unpack( rets )
 end
 
+local function enqueueJob( label, func, ... )
+	table.insert( taskQueue, {label=label, func=func, args={...}} )
+end
+
 local function yield( func,label, ... )
+	if #unfinished > 20 then
+		print("YIELD: "..label)
+	end
 	table.insert(unfinished, {
 	--unfinished[1] = {
 		func = func,
@@ -775,6 +814,10 @@ function autoYield( func, label, ... )
 	return false
 end
 
+function _progress( amount )
+	PROGRESS = amount
+end
+
 function _tokenize( src, state, quoting )
 	state = state or {}
 	if state.tokenized then return true end
@@ -786,8 +829,11 @@ function _tokenize( src, state, quoting )
 	local tokens = state.tokens
 	
 	local moreTokens = true
+	--print( ">tokenize> "..state.area[1]..", "..state.area[2] )
+	
 	while state.area[2] <= #src do
 		local area = state.area
+		_progress(area[2]*100/#src)
 		
 		local chunk = src:sub( area[1], area[2] )
 		local chunk2 = src:sub( area[1], area[2]+1 )
@@ -833,6 +879,7 @@ function _computeLineNums( state, index, lineNum, comment )
 	index = state._computeLines.index
 	
 	while tokens[ state._computeLines.index ] do
+		_progress( state._computeLines.index * 100 / #tokens )
 		local token  = tokens[state._computeLines.index]
 		
 		if token == "\n" then
@@ -867,13 +914,19 @@ local function _closePar( openPar )
 end
 
 --list of instructions or false to yield
-function _evalInstr( state, first, last, i, out, stack )
+function _evalInstr( state, first, last, resume )
+	state._evalInst = state._evalInst or {
+		i = first,
+		out = {},
+		stack = {}
+	}
 	local tokens = state.tokens
-	i = i or first
+	local i = state._evalInst.i
 	--last or nil
-	out = out or {}
-	stack = stack or {}
-	while tokens[ i ] ~= ";" and (last==nil or i <= last) do
+	local out = state._evalInst.out
+	local stack = state._evalInst
+	while tokens[ i ] ~= ";" and (type(last)=="number" and i <= last) do
+		print(" evi: "..i.." | "..tokens[i])
 		local t0 = i-1 >= first and tokens[ i-1 ]
 		local t1 = tokens[ i ]
 		local t2 = tokens[ i+1 ]
@@ -967,7 +1020,9 @@ function _evalInstr( state, first, last, i, out, stack )
 		end
 
 		i = i+1
-		if autoYield( _evalInstr,"_evalInstr", state, first, last, i, out, stack ) then return end
+		state._evalInst.i = i
+		--or false is important to fix a bug when running with moonsharp...
+		if autoYield( _evalInstr,"_evalInstr", state, first, last or false, true ) then return end
 	end
 
 
@@ -979,6 +1034,10 @@ function _evalInstr( state, first, last, i, out, stack )
 		table.insert( out, pop )
 	end
 	
+	if not resume then
+		state._evalInst = nil
+	end
+
 	return {
 		op="EVAL",
 		postfix = out
@@ -1017,10 +1076,13 @@ function _buildInstructions( state )
 	local tokens = state.tokens
 	
 	while tokens[index] do
+		_progress( index*100 / #tokens )
 		local lineNum = state.lineNums[ index ]
 		local t1 = tokens[index]
 		local t2,t3,t4 = tokens[ index + 1 ], tokens[ index + 2 ], tokens[index + 3]
 		local i2,i3,i4,i5 = index+1, index+2, index+3, index+4
+
+		--if t1 then print("BuildInst: "..t1) end
 
 		if t1 == "{" then
 			state.scope = state.scope+1
@@ -1291,7 +1353,7 @@ function _buildInstructions( state )
 				table.insert( inst, eval )
 				index = lastToken + 1
 			else --else needs more itteration
-				--return false handled by auto yield
+				return false
 			end
 		end
 		
@@ -1302,6 +1364,7 @@ function _buildInstructions( state )
 end
 
 function _compile( src, prgmName, main, state )
+	if not state then print"> tokenize" end
 	state = state or {
 		instructions = {}, --global
 		functions = {}, --like instructions, name={instr...}
@@ -1326,6 +1389,7 @@ function _compile( src, prgmName, main, state )
 			args={src, state}
 		} ) then
 			state.step = "computeLines"
+			print"> computeLines"
 		else
 			return false
 		end
@@ -1342,6 +1406,7 @@ function _compile( src, prgmName, main, state )
 			args={ state }
 		}) then
 			state.step = "buildInstructions"
+			print"> buildInstructs"
 		else
 			return false
 		end
@@ -1357,6 +1422,7 @@ function _compile( src, prgmName, main, state )
 			args = {state}
 		}) then
 			programs[ prgmName ] = state
+			print("> "..prgmName.." compiled")
 			return true
 		else
 			return false
@@ -1874,6 +1940,15 @@ function _evaluate( postfix, prgmState, resume )
 	return true, table.unpack( stack )
 end
 
+function _printVal( note, name, x )
+	if not x then x = {type="void"} end
+	local str = tostring( x.val )
+	if x.type:sub(1,3)=="vec" or x.type:sub(1,3)=="mat" then
+		str = linalg.toString( x )
+	end
+		print(("%s: %s %s = %s"):format(note, name, x.type, str))
+end
+
 function _getInstructions( prgmState )
 	local callStack = prgmState.callStack[ #prgmState.callStack ]
 	return  prgmState.prgm.functions[ callStack.fName or prgmState.func ] and  prgmState.prgm.functions[ callStack.fName or prgmState.func ].instructions or prgmState.inst
@@ -1890,8 +1965,13 @@ function _doStep( inputs, prgmState )
 	local steps = _getInstructions( prgmState )
 	local step = steps[ stepIndex ]
 	local vars = callStack.vars
+	
+	--less spam
+	if not _WAS_EVAL then
+		print("_doStep:"..step.op)
+	end
+	_WAS_EVAL = step.op=="EVAL"
 
-	--print(step.op)
 	if step.op == "DECLARE" then
 		if vars[ step.name ] then
 			rerr( step.line, "var "..step.name.." is already defined in this scope")
@@ -1917,7 +1997,9 @@ function _doStep( inputs, prgmState )
 		end
 		local ty = globals[ step.name ].type
 		local v = vars[ step.name ]
+		
 		if not inputs[ step.name ] then rerr( step.line, "Missing input '"..step.name.."'") end
+		_printVal( "IN", step.name, inputs[ step.name ])
 		v.val = _copyVar( _typeCheck( inputs[ step.name ], ty, step.name, step.line ) ).val
 		
 		-- if ty:sub(1,3) == "vec" then
@@ -2255,14 +2337,16 @@ function _run( prgmName, main, inputs, prgmState )
 	--init steps
 	if not prgmState.init then
 		while _getInstructions( prgmState )[ cs[#cs].getStepIndex() ] do
-			local ok, stepDone, nextIndex = pcall(	callYielding, {
-					func=_run,
-					label="_run-init",
-					args={prgmName, main, inputs, prgmState}
-				}, {
-					func=_doStep,
-					args={inputs, prgmState}
-				})
+			local ok, stepDone, nextIndex;
+			
+			ok, stepDone, nextIndex = pcall(	callYielding, {
+				func=_run,
+				label="_run-init",
+				args={prgmName, main, inputs, prgmState}
+			}, {
+				func=_doStep,
+				args={inputs, prgmState}
+			})
 			
 			if not ok then
 				prgm.ERROR = stepDone
@@ -2302,6 +2386,7 @@ function _run( prgmName, main, inputs, prgmState )
 		end
 	end
 
+	print"Complete, collecting outs"
 	--update variables declared as `out`
 	local out = {}
 	for i, info in pairs( prgm.outputs ) do
@@ -2309,6 +2394,7 @@ function _run( prgmName, main, inputs, prgmState )
 		local typeName = info.type
 		out[ varName ] = prgmState.callStack[1].get( varName )
 	end
+	prgm.outData = out
 
 	--return value from called function
 	prgm.RESULT = prgmState.RESULT
@@ -2367,20 +2453,46 @@ function setup()
 end
 
 function loop()
+	if #unfinished > 1024 then
+		error("improbable queue size (> 1024)")
+	end
+	-- print("#uf:"..#unfinished)
 	timeout = TIMEOUT
-	if not BUSY and #unfinished > 0 then
+	if not BUSY and (#unfinished > 0 or #taskQueue > 0) then
 		BUSY = true
 		output( BUSY, 1 )
+	end
+	if #unfinished == 0 and #taskQueue > 0 then
+		local task = table.remove( taskQueue, 1 )
+		print("Task: "..(task.label or "?"))
+		task.func( table.unpack(task.args) )
 	end
 	while #unfinished > 0 and timeout > 0 do
 		local uf = table.remove( unfinished )
 		if not uf.func( table.unpack( uf.args ) ) then break end
+		if #unfinished == 0 and #taskQueue > 0 then
+			local task = table.remove( taskQueue, 1 )
+			print("Task: "..(task.label or "?"))
+			task.func( table.unpack(task.args) )
+		end
 	end
-	if #unfinished == 0 and BUSY then
+	output( PROGRESS or 0, 7 )
+	if #unfinished == 0 and #taskQueue == 0 and BUSY then
 		BUSY = false
+		print("Task queue emptied")
 		output( BUSY, 1 )
 	end
 	
+	-- local pchunk = {}
+	-- for i = 1,8 do  --screen line limit
+	-- 	local c = table.remove(PRINT)
+	-- 	if not c then break end
+	-- 	table.insert(pchunk, c)
+	-- end
+	if #PRINT > 0 then
+		-- _nativePrint( table.concat( pchunk, "\n") )
+		_nativePrint( table.remove(PRINT, 1) )
+	end
 end
 
 --public interfaces
@@ -2401,7 +2513,10 @@ function compile( source, programName, main )
 	 		source or read_var"v1",
 			programName or read_var"name",
 			main or read_var"v2"
-	_compile( source, programName, main )
+	enqueueJob( "compile",function()
+		print("Compiling "..programName)
+		_compile( source, programName, main )
+	end)
 end
 
 local function _inputVec( size, offset )
@@ -2412,7 +2527,11 @@ local function _inputVec( size, offset )
 	for i=1, size do
 		vec.val[i] = read_var("v"..(i+offset)) or 0
 	end
-	INPUTS[ name ] = vec
+
+	enqueueJob("input "..vec.type,function()
+		INPUTS[ name ] = vec
+		print("-> "..vec.type.." "..(read_var"name" or "?"))
+	end)
 end
 
 local function _inputMat( row, col, offset )
@@ -2424,7 +2543,11 @@ local function _inputMat( row, col, offset )
 			mat.val[r][c] = read_var("v"..((c-1)*col + r + offset) )
 		end
 	end
-	INPUTS[ name ] = vec
+
+	enqueueJob("input "..mat.type,function()
+		INPUTS[ name ] = mat
+		print("-> "..mat.type.." "..(read_var"name" or "?"))
+	end)
 end
 
 function inputVec2()
@@ -2461,8 +2584,11 @@ function inputTex()
 	if type(channels)~="number" or channels < 1 then
 		error"invalid channel count"
 	end
-
-	INPUTS[ name ] = _wrapVal( read_var"v1" or "", "tex"..channels)
+	local val = _wrapVal( read_var"v1" or "", "tex"..channels)
+	enqueueJob("input "..val.type, function()
+		INPUTS[ name ] = val
+		print("-> "..val.type.." "..name)
+	end)
 end
 
 function inputStr()
@@ -2476,7 +2602,10 @@ function inputStr()
 		error"string expected"
 	end
 
-	INPUTS[ name ] = _wrapVal( str )
+	enqueueJob("input str",function()
+		INPUTS[ name ] = _wrapVal( str )
+		print("-> str "..name)
+	end)
 end
 
 function inputBool()
@@ -2486,29 +2615,55 @@ function inputBool()
 	end
 
 	local bool = not not read_var"v1"
+	
+	enqueueJob("input bool", function()
+		INPUTS[ name ] = _wrapVal( bool )
+		print("-> bool "..name)
+	end)
+end
 
-	INPUTS[ name ] = _wrapVal( bool )
+function inputNum()
+	local name = read_var"name"
+	if type(name)~="string" then
+		error"invalid name"
+	end
+
+	local num = read_var"v1"
+
+	enqueueJob("input num",function()
+		INPUTS[ name ] = _wrapVal( num )
+		print("-> num "..name)
+	end)
 end
 
 function transfer(p1, p2)
 	local programName1, programName2 = p1 or read_var"v1", p2 or read_var"v2"
-	local prgm1 = programs[ programName1 ]
-	local prgm2 = programs[ programName2 ]
-	for name, val in pairs(prgm1.outputs) do
-		INPUTS[ name ] = val
-	end
-	if prgm1.verts then
-		prgm2.verts = {}
-		for i=1,#prgm1.verts do
-			prgm2.verts[i] = linalg.copyVector( prgm1.verts[i] )
+
+	enqueueJob(programName1.."->"..programName2, function()
+		local prgm1 = programs[ programName1 ]
+		local prgm2 = programs[ programName2 ]
+		for name, val in pairs(prgm1.outData) do
+			_printVal("outData -> ", name, val)
+			INPUTS[ name ] = val
 		end
-	end
-	if prgm1.uvs then
-		prgm2.uvs = {}
-		for i=1,#prgm1.uvs do
-			prgm2.uvs[i] = linalg.copyVector( prgm1.uvs[i] )
+		if prgm1.verts then
+			print("-> verts")
+			prgm2.verts = {}
+			for i=1,#prgm1.verts do
+				prgm2.verts[i] = linalg.copyVector( prgm1.verts[i] )
+				_printVal("-->", tostring(i), prgm2.verts[i])
+			end
 		end
-	end
+		if prgm1.uvs then
+			print("-> uvs")
+			prgm2.uvs = {}
+			for i=1,#prgm1.uvs do
+				prgm2.uvs[i] = linalg.copyVector( prgm1.uvs[i] )
+				_printVal("-->", tostring(i), prgm2.uvs[i])
+			end
+		end
+		print("transfer complete")
+	end)
 end
 
 function run( programName )
@@ -2526,15 +2681,17 @@ function run( programName )
 		_run( programName, prgm.main, INPUTS )
 	end
 	
+	yield(function() end,"end-run")
 end
 
+--has output, can't enqueue
 function _runVert( programName, state )
 	state = state or {
 		step = "init",
 		vertexID = 1
 	}
 	local prgm = programs[ programName ]
-	while vertexID <= 3 do
+	while state.vertexID <= 3 do
 		if state.step == "init" then
 			prgm.verts = {
 				linalg.newVector(3),
@@ -2559,7 +2716,7 @@ function _runVert( programName, state )
 		end
 
 		if state.step == "transform" then
-			INPUTS.pos = state.verts[ state.vertexID ]
+			INPUTS.pos = prgm.verts[ state.vertexID ]
 			state.step = "transform"
 			prgm.RESULT = nil
 
@@ -2641,6 +2798,7 @@ function _runFrag( programName, state )
 	end
 end
 
+print("Shader module loaded")
 
 -- ----------------------------------------------------------------------------
 -- -- vs code only ------------------------------------------------------------
@@ -2651,13 +2809,13 @@ if io then
 		return fakeVars[ x ]
 	end
 	function write_var( val, name )
-		print(("[WRITE_VAR] %s -> %s"):format( tostring(val), name ))
+		_nativePrint(("[WRITE_VAR] %s -> %s"):format( tostring(val), name ))
 	end
 	function output( val, pin )
-		print(("[OUT] %s -> %d"):format(tostring(val), pin))
+		_nativePrint(("[OUT] %s -> %d"):format(tostring(val), pin))
 	end
 	function trigger( pin )
-		print(("[TRIGGER] %d"):format(pin))
+		_nativePrint(("[TRIGGER] %d"):format(pin))
 	end
 	setup()
 
@@ -2666,26 +2824,26 @@ if io then
 	local mat = linalg.mat
 	local w = _wrapVal
 	--simulate command
-	print"COMPILE Camera"
+	_nativePrint"COMPILE Camera"
 	_compile( makeCam, "makeCam" )
 	repeat
 		loop()
 	until #unfinished == 0
 
-	print"COMPILE VERT"
+	_nativePrint"COMPILE VERT"
 	_compile( vert, "vert1" )
 	repeat
 		loop()
 	until #unfinished == 0
 
 
-	print"COMPILE FRAG"
+	_nativePrint"COMPILE FRAG"
 	_compile( frag, "frag1" )
 	repeat
 		loop()
 	until #unfinished == 0
 
-	print"RUN makeCam"
+	_nativePrint"RUN makeCam"
 	_run("makeCam", "mkCam",{
 		fovWidth = w(90),
 		fovHeight = w(90),
@@ -2699,7 +2857,7 @@ if io then
 		loop()
 	until #unfinished == 0
 
-	print"RUN VERT"
+	_nativePrint"RUN VERT"
 	--simulate command
 
 	_run( "vert1", "vert", {
@@ -2714,7 +2872,7 @@ if io then
 	--TODO store RESULT in program instead
 	--TODO `transfer` copy `out` values from `prgm1` to `prgm2`
 
-	print"RUN FRAG"
+	_nativePrint"RUN FRAG"
 	_run( "frag1", "frag", { --TODO automate size from imported inputs during DECLARE and INPUT
 		color    = vec( w(1), w(0), w(0) ), --red
 		lightPos = vec( w(0), w(100), w( 0) ),
@@ -2727,6 +2885,9 @@ if io then
 		loop()
 	until #unfinished == 0
 
-	print"Done!"
-	print( programs.frag1.RESULT )
+	_nativePrint"Done!"
+	_printVal( "DONE ","result",programs.frag1.RESULT )
+	repeat
+		loop()
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 end
