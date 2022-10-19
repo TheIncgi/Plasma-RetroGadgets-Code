@@ -6,7 +6,7 @@
 
 --todo copy function in shader for matrix/vector
 
-local TIMEOUT = 20 --loops before exit to continue next tick
+local TIMEOUT = 4 --loops before exit to continue next tick
 
 --test code
 local makeCam = [[
@@ -34,6 +34,8 @@ local makeCam = [[
 		camera[1,4] = pos.x;
 		camera[2,4] = pos.y;
 		camera[3,4] = pos.z;
+		
+		print( camera );
 		return; //required in current version, no warnings though
 	}
 ]]
@@ -198,7 +200,7 @@ local function _makeGlobals()
 	end
 
 	g.print = function( val )
-		_printVal( "DBUG: ", val )
+		_printVal( "DBUG: ", val.name or "?", val )
 		return true
 	end
 
@@ -926,7 +928,7 @@ function _evalInstr( state, first, last, resume )
 	local out = state._evalInst.out
 	local stack = state._evalInst
 	while tokens[ i ] ~= ";" and (type(last)~="number" or i <= last) do
-		print(" evi: "..i.." | "..tokens[i])
+		--print(" evi: "..i.." | "..tokens[i])
 		local t0 = i-1 >= first and tokens[ i-1 ]
 		local t1 = tokens[ i ]
 		local t2 = tokens[ i+1 ]
@@ -1036,6 +1038,7 @@ function _evalInstr( state, first, last, resume )
 	
 	if not resume then
 		state._evalInst = nil
+		
 	end
 
 	return {
@@ -1505,7 +1508,7 @@ function _insertCallStack( cs, includeUpScope, fName )
 	new.get = function( x )
 		return vars[x] 
 		  or (includeUpScope and new.parent and new.parent.get( x ))
-		  or global[x]
+		  or global.vars[x]
 	end
 	new.getStepIndex = function()
 		return new.stepIndex or new.parent and new.parent.getStepIndex()
@@ -1717,13 +1720,19 @@ local evalOps = {
 
 --@yielding
 function _evaluate( postfix, prgmState, resume )
-
 	local env = prgmState.callStack[#prgmState.callStack]
 	local i = env._eval_index or 1
 	env.stack = env.stack or {}
 	env.callMarkers = env.callMarkers or {}
 	local callMarkers = env.callMarkers
 	local stack = env.stack
+
+	if not resume then
+		print("POSTFIX")
+		for j=1,#postfix do
+			print( i..":"..j.." "..postfix[j].op.." "..tostring(postfix[j].val))
+		end
+	end
 
 	local lineNum = _getInstructions( prgmState )[ env.getStepIndex() ].line
 	while i <=#postfix do
@@ -1844,6 +1853,7 @@ function _evaluate( postfix, prgmState, resume )
 			table.insert( stack, c )
 		elseif step.op == "CALL_END" then
 			table.insert(callMarkers, #stack+1) --last arg of function call
+			--print("EOC marked")
 		elseif step.op == "CALL" then ----------------------------------------------------------todo () type or [] type
 			if step.openWith == "[" then --actually indexing, not a call
 				local mark = table.remove( callMarkers )
@@ -1880,8 +1890,8 @@ function _evaluate( postfix, prgmState, resume )
 				elseif env.callInfo then
 						return false --continuing is handled by yield system
 				else
-
-					local mark = table.remove( callMarkers )
+					--print("#CM: "..#callMarkers)
+					local mark = callMarkers[#callMarkers]
 					if not mark then
 						rerr( lineNum, "Compiler issue: missing end of call args op")
 					end
@@ -1897,20 +1907,23 @@ function _evaluate( postfix, prgmState, resume )
 					if not done then --100% of shader functions 
 						return false --needs continuation, handled in caller
 					end
-					if not c.type then
-						local t;
-						if type(c) == "number" then
-							t = "num"
-						elseif type(c)=="string" then
-							t = "str"
-						elseif type(c)=="boolean" then
-							t = "bool"
-						else
-							error("Function err: missing type tag from call result on line "..lineNum.."for type "..type(c))
+					table.remove(callMarkers)
+					if c then
+						if not c.type then
+							local t;
+							if type(c) == "number" then
+								t = "num"
+							elseif type(c)=="string" then
+								t = "str"
+							elseif type(c)=="boolean" then
+								t = "bool"
+							else
+								error("Function err: missing type tag from call result on line "..lineNum.."for type "..type(c))
+							end
+							c = {type=t,val=c}
 						end
-						c = {type=t,val=c}
+						table.insert( stack, c )
 					end
-					table.insert( stack, c )
 				end
 			end
 
@@ -1929,6 +1942,7 @@ function _evaluate( postfix, prgmState, resume )
 		i = i+1
 		env._eval_index = i
 		if autoYield( _evaluate,"_evaluate", postfix, prgmState, true ) then 
+			print"yielding in eval"
 			return false 
 		end
 	end
@@ -1946,7 +1960,7 @@ function _printVal( note, name, x )
 	if x.type:sub(1,3)=="vec" or x.type:sub(1,3)=="mat" then
 		str = linalg.toString( x )
 	end
-		print(("%s: %s %s = %s"):format(note, name, x.type, str))
+	print(("%s: %s %s = %s"):format(note, name, x.type, str))
 end
 
 function _getInstructions( prgmState )
@@ -2418,6 +2432,7 @@ function loop()
 	end
 	while #unfinished > 0 and timeout > 0 do
 		local uf = table.remove( unfinished )
+		print("resume "..(uf.label or ""))
 		if not uf.func( table.unpack( uf.args ) ) then break end
 		if #unfinished == 0 and #taskQueue > 0 then
 			local task = table.remove( taskQueue, 1 )
@@ -2474,7 +2489,9 @@ local function _inputVec( size, offset )
 	local vec = linalg.newVector( size )
 	offset = offset or 0
 	for i=1, size do
-		vec.val[i] = read_var("v"..(i+offset)) or 0
+		local x = read_var("v"..(i+offset))
+		if type(x)~="number" then error("input vec["..i.."] was not a num") end
+		vec.val[i] = read_var("v"..(i+offset))
 	end
 
 	enqueueJob("input "..vec.type,function()
@@ -2484,12 +2501,17 @@ local function _inputVec( size, offset )
 end
 
 local function _inputMat( row, col, offset )
+	offset = offset or 0
 	local name = read_var"name"
 	if type(name)~="string" then error"invalid name" end
 	local mat = linalg._emptyMatrix(row, col)
 	for r=1, mat.rows do
+		mat.val[r] = {}
 		for c=1, mat.cols do
-			mat.val[r][c] = read_var("v"..((c-1)*col + r + offset) )
+			local iName = "v"..((c-1)*mat.cols + r + offset)
+			local x = read_var( iName )
+			if type(x)~="number" then error(("input mat[%d,%d] (%s) was not a num"):format(r,c, iName)) end
+			mat.val[r][c] = x
 		end
 	end
 
@@ -2639,7 +2661,18 @@ function _runVert( programName, state )
 		step = "init",
 		vertexID = 1
 	}
+	
 	local prgm = programs[ programName ]
+	if not prgm then
+		print"Programs:"
+		for k in pairs(programs) do
+			print("-> "..k)
+		end
+		error("Could not locate program '"..tostring(programName).."'")
+	end
+
+	local verts = {}
+
 	while state.vertexID <= 3 do
 		if state.step == "init" then
 			prgm.verts = {
@@ -2661,7 +2694,7 @@ function _runVert( programName, state )
 			end
 			state.step = "transform"
 			
-			if autoYield( _runVert,"_runVert-init", state ) then return end
+			if autoYield( _runVert,"_runVert-init", programName, state ) then return end
 		end
 
 		if state.step == "transform" then
@@ -2671,7 +2704,7 @@ function _runVert( programName, state )
 
 			_run(programName, prgm.main, INPUTS)
 			state.step = "result"
-			if autoYield( _runVert,"_runVert-transform", state ) then return end
+			if autoYield( _runVert,"_runVert-transform", programName, state ) then return end
 		end
 
 		if state.step == "result" then
@@ -2680,12 +2713,12 @@ function _runVert( programName, state )
 				state.vertexID = state.vertexID + 1
 				state.step = "transform"
 			else
-				yield( _runVert,"_runVert-result", state )
+				yield( _runVert,"_runVert-result", programName, state )
 				return
 			end
 		end
 
-		if autoYield( _runVert,"_runVert", state ) then return end
+		if autoYield( _runVert,"_runVert", programName, state ) then return end
 	end
 
 	for i=1, 3 do
@@ -2722,7 +2755,7 @@ function _runFrag( programName, state )
 		INPUTS.uvPos = barUV
 
 		state.step = "color"	
-		if autoYield( _runFrag,"_runFrag-init", state ) then return end
+		if autoYield( _runFrag,"_runFrag-init", programName, state ) then return end
 	end
 
 	if state.step == "color" then
@@ -2730,7 +2763,7 @@ function _runFrag( programName, state )
 
 		_run(programName, prgm.main, INPUTS)
 		state.step = "result"
-		if autoYield( _runFrag,"_runFrag-color", state ) then return end
+		if autoYield( _runFrag,"_runFrag-color", programName, state ) then return end
 	end
 
 	if state.step == "result" then
@@ -2741,7 +2774,7 @@ function _runFrag( programName, state )
 			end
 			trigger( 8 )
 		else
-			yield( _runFrag,"_runFrag-result", state )
+			yield( _runFrag,"_runFrag-result", programName, state )
 			return
 		end
 	end
@@ -2777,20 +2810,20 @@ if io then
 	_compile( makeCam, "makeCam" )
 	repeat
 		loop()
-	until #unfinished == 0
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 
 	_nativePrint"COMPILE VERT"
 	_compile( vert, "vert1" )
 	repeat
 		loop()
-	until #unfinished == 0
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 
 
 	_nativePrint"COMPILE FRAG"
 	_compile( frag, "frag1" )
 	repeat
 		loop()
-	until #unfinished == 0
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 
 	_nativePrint"RUN makeCam"
 	_run("makeCam", "mkCam",{
@@ -2804,7 +2837,7 @@ if io then
 
 	repeat
 		loop()
-	until #unfinished == 0
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 
 	_nativePrint"RUN VERT"
 	--simulate command
@@ -2817,7 +2850,7 @@ if io then
 	})
 	repeat
 		loop()
-	until #unfinished == 0
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 	--TODO store RESULT in program instead
 	--TODO `transfer` copy `out` values from `prgm1` to `prgm2`
 
@@ -2832,10 +2865,10 @@ if io then
 	} )
 	repeat
 		loop()
-	until #unfinished == 0
+	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
 
 	_nativePrint"Done!"
-	_printVal( "DONE ","result",programs.frag1.RESULT )
+	_printVal( "DONE ","result",programs.frag1.RESULT[1] )
 	repeat
 		loop()
 	until #unfinished == 0 and #taskQueue == 0 and #PRINT == 0
