@@ -925,7 +925,7 @@ function _evalInstr( state, first, last, resume )
 	--last or nil
 	local out = state._evalInst.out
 	local stack = state._evalInst
-	while tokens[ i ] ~= ";" and (type(last)=="number" and i <= last) do
+	while tokens[ i ] ~= ";" and (type(last)~="number" or i <= last) do
 		print(" evi: "..i.." | "..tokens[i])
 		local t0 = i-1 >= first and tokens[ i-1 ]
 		local t1 = tokens[ i ]
@@ -1344,7 +1344,7 @@ function _buildInstructions( state )
 				args = {state, index}
 			},{
 				func=_evalInstr,
-				args={state, index}
+				args={state, index, false}
 			})
 			
 			if eval then
@@ -1957,7 +1957,9 @@ end
 --@yielding
 function _doStep( inputs, prgmState )
 	--DECLARE, INPUT, EVAL, IF, FOR, WHILE, RETURN, BREAK, CONTINUE
-	
+	--do not use callYielding for evaluation here
+	--use a normal call and return true,lineNum / false
+	--otherwise program can get stuck in a 3 phase loop (see "EVAL")
 	
 	local stepIndex = prgmState.callStack[ #prgmState.callStack ].getStepIndex()
 	local globals = prgmState.callStack[1].vars
@@ -2019,14 +2021,11 @@ function _doStep( inputs, prgmState )
 		return true,stepIndex + 1
 
 	elseif step.op == "EVAL" then
-		local done = callYielding({
-			func=_doStep,
-			label="_doStep",
-			args={inputs, prgmState}
-		},{
-			func=_evaluate,
-			args={step.postfix, prgmState}
-		})
+		--do not use callYielding, causes 3 phase loop
+		--Eval, yields, resumes evaluate, resumes doStep, clears result, 
+		--returned value not used
+		--prgm loop runs this section expecting a result and instead starts a new eval
+		local done = _evaluate(step.postfix, prgmState)
 		
 		return done, stepIndex + (done and 1 or 0)
 		
@@ -2035,14 +2034,7 @@ function _doStep( inputs, prgmState )
 
 	elseif step.op == "SCOPE_DOWN" then
 		if callStack.onEndBlock then
-			local done, to = callYielding({
-				func=_doStep,
-				label="_doStep",
-				args={inputs, prgmState}
-			},{
-				func=callStack.onEndBlock,
-				args={}
-			})
+			local done, to = callStack.onEndBlock()
 			if not done then return false, stepIndex end
 			table.remove( prgmState.callStack ) --pop
 			return true, to
@@ -2051,14 +2043,8 @@ function _doStep( inputs, prgmState )
 		end
 
 	elseif step.op == "IF" then
-		local done, val = callYielding({
-			func=_doStep,
-			label="_doStep",
-			args={inputs, prgmState}
-		},{
-			func=_evaluate,
-			args={ step.postfix, prgmState }
-		})
+		local done, val = _evaluate( step.postfix, prgmState )
+		
 		if not done then return false, stepIndex end
 
 		local truthy = _truthy( val )
@@ -2077,27 +2063,14 @@ function _doStep( inputs, prgmState )
 
 	elseif step.op == "FOR" then
 		if not callStack.forInit then
-			local done, init = callYielding({
-				func=_doStep,
-				label="_doStep",
-				args={inputs, prgmState}
-			},{
-				func=_evaluate,
-				args={ step.init, prgmState }
-			})
+			local done, init = _evaluate( step.init, prgmState )
 			if not done then return false, stepIndex end
 			callStack.forInit = true
 		end
 		local nx = prgmState.stepIndex + 1
 
-		local testDone,testVal callYielding({
-			func=_doStep,
-			label="_doStep",
-			args={inputs, prgmState}
-		},{
-			func=_evaluate,
-			args={ step.test, prgmState }
-		})
+		local testDone,testVal =_evaluate( step.test, prgmState )
+		
 		if not testDone then return false, stepIndex end
 
 		callStack.forInit = nil
@@ -2117,14 +2090,8 @@ function _doStep( inputs, prgmState )
 					if not done then return false end
 				end
 				if _truthy( test ) then
-					local done2 = callYielding({
-						func=callStack.onEndBlock,
-						label="for-onEndBlock-inc",
-						args={done, test}
-					},{
-						func=_evaluate,
-						args={ step.inc, prgmState }
-					})
+					local done2 =_evaluate( step.inc, prgmState )
+					
 					if not done2 then return false end --@ end of block
 					return true,nx
 				else
@@ -2148,14 +2115,8 @@ function _doStep( inputs, prgmState )
 		if ran then
 			nxt = step.skip
 		else
-			local done, val = callYielding({
-				func=_doStep,
-				label="_doStep",
-				args={inputs, prgmState}
-			},{
-				func=_evaluate,
-				args={ step.postfix, prgmState }
-			})
+			local done, val = _evaluate( step.postfix, prgmState )
+			
 			if not done then return false, stepIndex end
 
 			local truthy = _truthy( val )
@@ -2175,14 +2136,8 @@ function _doStep( inputs, prgmState )
 		return true, nxt
 
 	elseif step.op == "WHILE" then
-		local val = callYielding({
-			func=_doStep,
-			label="_doStep",
-			args={inputs, prgmState}
-		},{
-			func=_evaluate,
-			args={ step.postfix, prgmState }
-		})
+		local val = _evaluate( step.postfix, prgmState )
+		
 		if not val then return false, stepIndex end
 
 		local truthy = _truthy( val )
@@ -2194,14 +2149,8 @@ function _doStep( inputs, prgmState )
 		end
 
 	elseif step.op == "RETURN" then
-		local done, val = callYielding({
-			func=_doStep,
-			label="_doStep",
-			args={inputs, prgmState}
-		},{
-			func=_evaluate,
-			args={ step.postfix, prgmState }
-		}) --only one return value used if multiple for some reason
+		local done, val = _evaluate( step.postfix, prgmState )
+		 --only one return value used if multiple for some reason
 		if done then
 			
 			if #prgmState.callStack == 2 then
