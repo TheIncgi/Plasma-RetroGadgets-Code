@@ -6,7 +6,7 @@
 
 --todo copy function in shader for matrix/vector
 
-local TIMEOUT = 4 --loops before exit to continue next tick
+local TIMEOUT = 20 --loops before exit to continue next tick
 
 --test code
 local makeCam = [[
@@ -21,6 +21,7 @@ local makeCam = [[
 
 	//source https://stackoverflow.com/a/62243585/11295774
 	void mkCam() {
+		print("#FF00FF","HELLO WORLD");
 		camera = mat(
 			vec( cot(rad(fovWidth))/2, 0, 0, 0 ),
 			vec( 0, cot(rad(fovHeight))/2, 0, 0 ),
@@ -38,17 +39,24 @@ local makeCam = [[
 		print( camera );
 		return; //required in current version, no warnings though
 	}
+
 ]]
 
 local vert = [[
-	in vec3 pos;   //special
+	in vec3 pos;
 	in mat4_4 transform;
 	in mat4_4 camera;
 	out vec4 camPos;
 
 	vec3 vert() {
 		camPos = vec( camera[1,4], camera[2,4], camera[3,4], camera[4,4] );
-		return (camera * transform * vec(pos,1)).xyz;
+		vec3 res = (camera * transform * vec(pos,1)).xyz;
+		print("BREAKPOINT"); //watching for text in debug
+		res.x = 50;
+		res[2] = 60;
+		res[3] = 70;
+		print("#0000FF", "Tf'd: "+res );
+		return res;
 	}
 ]]
 
@@ -129,6 +137,16 @@ _nativePrint = print
 PRINT = {"checking scrolling","a","b","c","d","e","f","g","h","i","j","k","l","m",} --used in loop
 print = function( ... )
 	local args = {...}
+	if args[1]:match"^#[0-9a-fA-F]+$" then
+		local openTag = "<color="..args[1]..">"
+		local closeTag = "</color>"
+		table.remove( args, 1 )
+		local s = table.concat(args)
+		args = {}
+		for line in s:gmatch"[^\n]+" do
+			table.insert( args, openTag..line..closeTag)
+		end
+	end
 	-- if #PRINT>0 then
 	-- 	table.insert(PRINT,"\n")
 	-- end
@@ -199,8 +217,11 @@ local function _makeGlobals()
 		return true, _wrapVal( 1 / math.tan( angleRadians.val ), "num" )
 	end
 
-	g.print = function( val )
-		_printVal( "DBUG: ", val.name or "?", val )
+	g.print = function( val, color )
+		if color then
+			val,color = color,val.val
+		end
+		_printVal( "DBUG", val.name or "?", val, color )
 		return true
 	end
 
@@ -425,7 +446,8 @@ function linalg.cross( a, b )
 		local p2 = p1 % s +1  --+2 wrapped
 		local m1 = (i+s-2) % s + 1 -- -1 wrapped (by adding)
 		local m2 = (m1+s-2) % s + 1 -- -2 wrapped (by adding)
-		out[i] = a[p1] * b[p2] - a[m1] * b[m2]
+		_nativePrint( ("%f * %f - %f * %f"):format(a.val[p1] , b.val[p2] , a.val[m1] , b.val[m2]) )
+		out.val[i] = a.val[p1] * b.val[p2] - a.val[m1] * b.val[m2]
 	end
 	return out
 end
@@ -539,7 +561,12 @@ end
 function linalg.vecSwizzle( vec, swizzle )
 	swizzle = swizzle.val
 	if #swizzle == 1 then
-		return _wrapVal( vec.val[ swizzleIndexes[swizzle] ] )
+		local si = swizzleIndexes[swizzle]
+		local v = _wrapVal( vec.val[ si ] )
+		if vec.varName then 
+			v.ref = {var=vec, index={si}}
+		end
+		return v
 	elseif #swizzle == 0 then
 		error"Swizzle with len 0"
 	end
@@ -552,6 +579,7 @@ function linalg.vecSwizzle( vec, swizzle )
 	end
 	local out = linalg._emptyVector( #swizzle )
 	out.val = val
+	out.ref = {var=vec, path=swizzle}
 	return out
 end
 
@@ -677,9 +705,9 @@ end
 local SINGLE_QUOTE = string.char(39)
 local DOUBLE_QUOTE = string.char(34)
 local patterns = {
-	str = { "'[^'\n]'", '"[^"\n]"' },
+	str = { "'^[^'\n]+'$", '^"[^"\n]+"$' },
 	num = { 
-		int="^[0-9]$", 
+		int="^[0-9]+$", 
 		float="^[0-9]*%.[0-9]*$",
 		hex="^0x[0-9a-fA-F]+$",
 		bin="^0b[01]+$"
@@ -755,19 +783,20 @@ function _isOp( text )
 end
 
 function _chunkType( text )
-	if text:match"[ \t\n\r]" and text~="\n" then
+	--if not text then return false end
+	if text:match"[ \t\n\r]" and text~="\n" and not text:match"^['\"]" then
 		return false
 	elseif text=="\n" then
 		return "line"
 	elseif text:match"//.+" then 
 		return false
 	end
-	for _, name in ipairs{ "op","num","var" } do
+	for _, name in ipairs{ "op","num","var","str" } do
 		local group = patterns[ name ]
 		local txt =  text
 		if name == "str" then
 			--hide escaped quotes for testing
-			txt = txt:gsub("\\'",""):gsub('\\"')
+			txt = txt:gsub("\\'",""):gsub('\\"',"")
 		end
 		for _,pat in pairs( group ) do
 			if txt:match( pat ) then
@@ -820,12 +849,11 @@ function _progress( amount )
 	PROGRESS = amount
 end
 
-function _tokenize( src, state, quoting )
+function _tokenize( src, state )
 	state = state or {}
 	if state.tokenized then return true end
 	state.area = state.area or {1,0}
 	state.tokens = state.tokens or {}
-	state.quoting = quoting or false
 	
 	local inst = state.instructions
 	local tokens = state.tokens
@@ -846,7 +874,11 @@ function _tokenize( src, state, quoting )
 		if chunkType2 == "op" and #chunk == 1 then
 			chunkType2 = ops[ chunk2 ] ~= nil
 		end
-		
+		if not chunkType2
+		  and (chunk2:sub(1,1) == '"' or chunk2:sub(1,1) == "'")
+			and _chunkType(chunk or "")~="str" then
+				chunkType2 ="unfinished_str"
+ 		end
 		if not chunkType2 then --whitespace, end token
 			if #chunk > 0 then
 				table.insert( tokens, chunk )
@@ -927,7 +959,7 @@ function _evalInstr( state, first, last, resume )
 	--last or nil
 	local out = state._evalInst.out
 	local stack = state._evalInst
-	while tokens[ i ] ~= ";" and (type(last)~="number" or i <= last) do
+	while tokens[i] and tokens[ i ] ~= ";" and (type(last)~="number" or i <= last) do
 		--print(" evi: "..i.." | "..tokens[i])
 		local t0 = i-1 >= first and tokens[ i-1 ]
 		local t1 = tokens[ i ]
@@ -987,7 +1019,7 @@ function _evalInstr( state, first, last, resume )
 			table.insert( out, {op="val", val = _wrapVal( n )  } )
 
 		elseif chunkType1 == "str" then
-			table.insert( out, {op="val", val=t1:sub(2,-2):gsub('\\"','"'):gsub("\\'","'") } )
+			table.insert( out, {op="val", val=_wrapVal(t1:sub(2,-2):gsub('\\"','"'):gsub("\\'","'"), "str") } )
 
 		elseif t1 == "-" and ( not t0 or _chunkType(t0)=="op" ) then
 			-- negate
@@ -1566,7 +1598,9 @@ end
 local evalOps = {
 	add = function( a, b, lineNum )
 		local c;
-		if a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
+		if a.type=="str" or b.type=="str" then
+			c = _wrapVal( _toString(a) .. _toString(b) )
+		elseif a.type:sub(1,3) == "vec" or b.type:sub(1,3)=="vec" then
 			c = linalg.addVec(a, b)
 		elseif a.type:sub(1,3) == "mat" or b.type:sub(1,3) == "mat" then
 			c = linalg.addMat( a, b )
@@ -1649,15 +1683,31 @@ local evalOps = {
 
 	assign = function( a, val, lineNum )
 		if a.ref then
+			-- if a.ref.var.type:sub(1,3)=="vec" then
+			-- 	local valIsVec = val.type:sub(1,3)=="vec"
+			-- 	if not valIsVec and not val.type=="num" then rerr(lineNum,"can't assign to vec with "..val.type) end
+			-- 	for i=1,#a.ref.path do
+			-- 		local s = a.ref.path:sub(1,1)
+			-- 		local si = swizzleIndexes[ s ]
+			-- 		if si > a.size then rerr(lineNum,"swizzle assignment out of bounds") end
+			-- 		a.ref.var.val[ si ] = valIsVec and val.val[si] or val.val
+			-- 		if a.type=="num" then
+			-- 			a.val = a.ref.var.val[si]
+			-- 		else
+			-- 			a.val[si] = a.ref.var.val[si]
+			-- 		end
+			-- 	end
+			-- end
+		
 			local x = a.ref.var.val
 			local index = a.ref.index
 			for i=1,#index-1 do
 				x = x[a.ref.index[i]]
 			end
+			if val.type~="num" then rerr(lineNum,"can't assign "..val.type.." to "..a.type.." cell") end
 			x[ index[#index] ] = val.val
-		else
-			a.val = val.val
 		end
+		a.val = val.val
 	end,
 
 	eq = function( a, b, lineNum )
@@ -1727,12 +1777,12 @@ function _evaluate( postfix, prgmState, resume )
 	local callMarkers = env.callMarkers
 	local stack = env.stack
 
-	if not resume then
-		print("POSTFIX")
-		for j=1,#postfix do
-			print( i..":"..j.." "..postfix[j].op.." "..tostring(postfix[j].val))
-		end
-	end
+	-- if not resume then
+	-- 	print("POSTFIX")
+	-- 	for j=1,#postfix do
+	-- 		print( i..":"..j.." "..postfix[j].op.." "..tostring(postfix[j].val))
+	-- 	end
+	-- end
 
 	local lineNum = _getInstructions( prgmState )[ env.getStepIndex() ].line
 	while i <=#postfix do
@@ -1742,7 +1792,9 @@ function _evaluate( postfix, prgmState, resume )
 		elseif postfix[i+1] and postfix[i+1].op=="." and step.op=="var" then
 			table.insert( stack, {type="index", val=step.val})
 		elseif step.op == "var" then
-			table.insert( stack, env.get(step.val) )
+			local x = env.get(step.val)
+			x.varName = step.val
+			table.insert( stack, x )
 		elseif step.op == "-" then
 			local b = table.remove( stack )
 			local a = table.remove( stack )
@@ -1954,13 +2006,21 @@ function _evaluate( postfix, prgmState, resume )
 	return true, table.unpack( stack )
 end
 
-function _printVal( note, name, x )
-	if not x then x = {type="void"} end
+function _toString( x )
 	local str = tostring( x.val )
 	if x.type:sub(1,3)=="vec" or x.type:sub(1,3)=="mat" then
 		str = linalg.toString( x )
 	end
-	print(("%s: %s %s = %s"):format(note, name, x.type, str))
+	return str
+end
+function _printVal( note, name, x, color )
+	if not x then x = {type="void"} end
+	local str = _toString( x )
+	if color then
+		print(color, ("%s: %s %s = %s"):format(note, name, x.type, str))
+	else
+		print(("%s: %s %s = %s"):format(note, name, x.type, str))
+	end
 end
 
 function _getInstructions( prgmState )
@@ -2351,7 +2411,7 @@ function _run( prgmName, main, inputs, prgmState )
 
 	print"Complete, collecting outs"
 	--update variables declared as `out`
-	local out = {}
+	local out = prgm.outData or {}
 	for i, info in pairs( prgm.outputs ) do
 		local varName = info.name
 		local typeName = info.type
@@ -2432,7 +2492,7 @@ function loop()
 	end
 	while #unfinished > 0 and timeout > 0 do
 		local uf = table.remove( unfinished )
-		print("resume "..(uf.label or ""))
+		--print("resume "..(uf.label or ""))
 		if not uf.func( table.unpack( uf.args ) ) then break end
 		if #unfinished == 0 and #taskQueue > 0 then
 			local task = table.remove( taskQueue, 1 )
@@ -2657,11 +2717,6 @@ end
 
 --has output, can't enqueue
 function _runVert( programName, state )
-	state = state or {
-		step = "init",
-		vertexID = 1
-	}
-	
 	local prgm = programs[ programName ]
 	if not prgm then
 		print"Programs:"
@@ -2671,63 +2726,68 @@ function _runVert( programName, state )
 		error("Could not locate program '"..tostring(programName).."'")
 	end
 
-	local verts = {}
+	local verts = {
+		linalg.newVector(3),
+		linalg.newVector(3),
+		linalg.newVector(3)
+	}
+	local uvs = {
+		linalg.newVector(2),
+		linalg.newVector(2),
+		linalg.newVector(2)
+	}
+	
+	--caputure inputs
+	for i=1,3 do
+		verts[i].val[1] = read_var("posx"..i)
+		verts[i].val[2] = read_var("posy"..i)
+		verts[i].val[3] = read_var("posz"..i)
+		uvs[i].val[1] = read_var("posu"..i)
+		uvs[i].val[2] = read_var("posv"..i)
+	end
 
-	while state.vertexID <= 3 do
-		if state.step == "init" then
-			prgm.verts = {
-				linalg.newVector(3),
-				linalg.newVector(3),
-				linalg.newVector(3)
-			}
-			prgm.uvs = {
-				linalg.newVector(2),
-				linalg.newVector(2),
-				linalg.newVector(2)
-			}
-			for i=1,3 do
-				prgm.verts[i].val[1] = read_var("posx"..i)
-				prgm.verts[i].val[2] = read_var("posy"..i)
-				prgm.verts[i].val[3] = read_var("posz"..i)
-				prgm.uvs[i].val[1] = read_var("posu"..i)
-				prgm.uvs[i].val[2] = read_var("posv"..i)
-			end
-			state.step = "transform"
-			
-			if autoYield( _runVert,"_runVert-init", programName, state ) then return end
-		end
+	--init
+	enqueueJob("vert-init-"..programName,function()
+		prgm.verts = verts
+		prgm.uvs = uvs
+		prgm.outData = {}
+	end)
 
-		if state.step == "transform" then
-			INPUTS.pos = prgm.verts[ state.vertexID ]
-			state.step = "transform"
+	enqueueJob("calc-normal",function()
+		_printVal("norm","1",verts[1])
+		_printVal("norm","2",verts[2])
+		_printVal("norm","3",verts[3])
+		local d1 = linalg.subVec(verts[2], verts[1])
+		local d2 = linalg.subVec(verts[3], verts[2])
+		_printVal("norm","d1",d1)
+		_printVal("norm","d2",d2)
+		local normal = linalg.normalize( linalg.cross(d1, d2) )
+		prgm.outData.normal = normal
+		_printVal("","normal",normal,"#00FF00")
+	end)
+
+	for vertexID = 1, 3 do
+		enqueueJob("transform-"..vertexID,function()
+			INPUTS.pos = prgm.verts[ vertexID ]
 			prgm.RESULT = nil
-
 			_run(programName, prgm.main, INPUTS)
-			state.step = "result"
-			if autoYield( _runVert,"_runVert-transform", programName, state ) then return end
-		end
+		end)
 
-		if state.step == "result" then
-			if prgm.RESULT then
-				prgm.verts[ state.vertexID ] = prgm.RESULT
-				state.vertexID = state.vertexID + 1
-				state.step = "transform"
-			else
-				yield( _runVert,"_runVert-result", programName, state )
-				return
-			end
-		end
-
-		if autoYield( _runVert,"_runVert", programName, state ) then return end
+		enqueueJob("result-"..vertexID,function()
+			prgm.verts[ vertexID ] = prgm.RESULT[1]
+		end)
 	end
-
-	for i=1, 3 do
-		write_var( prgm.verts[i].val[1], "out"..i*3    )
-		write_var( prgm.verts[i].val[2], "out"..i*3 +1 )
-		write_var( prgm.verts[i].val[3], "out"..i*3 +2 )
-	end
-	trigger(8)
-
+	
+	--output
+	enqueueJob("output",function()
+		for i=1, 3 do
+			local n = (i-1)*3+1
+			write_var( prgm.verts[i].val[1], "out"..(n    ) )
+			write_var( prgm.verts[i].val[2], "out"..(n + 1) )
+			write_var( prgm.verts[i].val[3], "out"..(n + 2) )
+		end
+		trigger(8)
+	end)
 end
 
 function _runFrag( programName, state )
@@ -2801,6 +2861,19 @@ if io then
 	end
 	setup()
 
+
+	local tri = {
+		linalg._emptyVector(3),
+		linalg._emptyVector(3),
+		linalg._emptyVector(3)
+	}
+	tri[1].val = {-.5, -.5, 0}
+	tri[2].val = { .5, -.5, 0}
+	tri[3].val = {0.0, 0.5, -.3}
+
+	local d1 = linalg.subVec( tri[2], tri[1] )
+	local d2 = linalg.subVec( tri[3], tri[2] )
+	local norm = linalg.normalize( linalg.cross( d1, d2 ) )
 
 	local vec = linalg.vec
 	local mat = linalg.mat
