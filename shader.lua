@@ -1674,7 +1674,7 @@ local evalOps = {
 				rerr(lineNum, "can't divide "..a.type.." with "..b.type)
 			end
 		elseif a.type=="num" and b.type=="num" then
-			c = {type="num", val=b.val / a.val}
+			c = {type="num", val=a.val / b.val}
 		else
 			rerr(lineNum, ("%s / %s not implemented"))
 		end
@@ -2479,6 +2479,19 @@ function loop()
 	if #unfinished > 1024 then
 		error("improbable queue size (> 1024)")
 	end
+
+	if #PRINT > 0 then
+		-- _nativePrint( table.concat( pchunk, "\n") )
+		_nativePrint( table.remove(PRINT, 1) )
+	end
+
+	if #unfinished == 0 and #taskQueue == 0 and BUSY then
+		BUSY = false
+		print("Task queue emptied")
+		output( BUSY, 1 )
+		return
+	end
+
 	-- print("#uf:"..#unfinished)
 	timeout = TIMEOUT
 	if not BUSY and (#unfinished > 0 or #taskQueue > 0) then
@@ -2500,23 +2513,11 @@ function loop()
 			task.func( table.unpack(task.args) )
 		end
 	end
-	output( PROGRESS or 0, 7 )
-	if #unfinished == 0 and #taskQueue == 0 and BUSY then
-		BUSY = false
-		print("Task queue emptied")
-		output( BUSY, 1 )
+	if PROGRESS ~= LAST_PROGRESS then
+		output( PROGRESS or 0, 7 )
+		LAST_PROGRESS = PROGRESS
 	end
 	
-	-- local pchunk = {}
-	-- for i = 1,8 do  --screen line limit
-	-- 	local c = table.remove(PRINT)
-	-- 	if not c then break end
-	-- 	table.insert(pchunk, c)
-	-- end
-	if #PRINT > 0 then
-		-- _nativePrint( table.concat( pchunk, "\n") )
-		_nativePrint( table.remove(PRINT, 1) )
-	end
 end
 
 --public interfaces
@@ -2667,12 +2668,21 @@ function inputNum()
 	end)
 end
 
+function showPrograms()
+	print"Programs:"
+	for k in pairs(programs) do
+		print("-> "..k)
+	end
+end
+
 function transfer(p1, p2)
-	local programName1, programName2 = p1 or read_var"v1", p2 or read_var"v2"
+	local programName1, programName2 = p1 or read_var"v1", p2 or read_var"name"
 
 	enqueueJob(programName1.."->"..programName2, function()
 		local prgm1 = programs[ programName1 ]
 		local prgm2 = programs[ programName2 ]
+		if not prgm1 then showPrograms() error("Couldn't find prgm1 '"..programName1.."'") end
+		if not prgm2 then showPrograms() error("Couldn't find prgm2 '"..programName2.."'") end
 		for name, val in pairs(prgm1.outData) do
 			_printVal("outData -> ", name, val)
 			INPUTS[ name ] = val
@@ -2719,10 +2729,7 @@ end
 function _runVert( programName, state )
 	local prgm = programs[ programName ]
 	if not prgm then
-		print"Programs:"
-		for k in pairs(programs) do
-			print("-> "..k)
-		end
+		showPrograms()
 		error("Could not locate program '"..tostring(programName).."'")
 	end
 
@@ -2830,7 +2837,7 @@ function _runFrag( programName, state )
 		if prgm.RESULT then
 			local r = prgm.RESULT
 			for i=1,4 do
-				write_var( r.val[i] or 0, "out"..i )
+				write_var( math.min(256, math.max(0, (r.val[i] or 0) * 256)), "out"..i )
 			end
 			trigger( 8 )
 		else
