@@ -504,6 +504,19 @@ function screen.draw()
   end
 end
 
+function screen.drawDepth()
+  print()
+  for h,row in ipairs(screen.depth) do
+    local line = {}
+		for i,v in ipairs(row) do
+			local g = v /10*255
+			g = math.max(0,math.min(255,math.floor(g)))
+			table.insert(line,screen.pixel(g,g,g))
+		end
+    print(table.concat(line))
+  end
+end
+
 screen.clear()
 
 
@@ -514,17 +527,27 @@ shaders = {
 		local rad = math.rad
 			
 		local far,near = env.far,env.near
+		--todo fovW = 2*atan(aspect*tan(fovH/2))
 		local fovW,fovH = env.fovW, env.fovH
 			
 		local vec,mat = linalg.vec,linalg.mat
 		local rotMat = linalg.rotateMatrix
 		local translate = linalg.transform
 				
+		-- local cam = mat(
+		-- 	vec( cot(rad(fovW/2)), 0,0,0 ), 
+		-- 	vec( 0, cot(rad(fovH/2)),0,0 ),
+		-- 	vec( 0,0,-far/(far-near),   0 ),
+		-- 	vec( 0,0,far*near/(near-far), 0)
+		-- )
+		local fx = cot(rad(fovH/2))
+		local fy = cot(rad(fovW/2))
+
 		local cam = mat(
-			vec( cot(rad(fovW/2)), 0,0,0 ), 
-			vec( 0, cot(rad(fovH/2)),0,0 ),
-			vec( 0,0,far/(far-near),   0 ),
-			vec( 0,0,far*near/(near-far), 0)
+			vec( fx,  0 ,0,0 ), 
+			vec(  0, fy, 0,0 ),
+			vec(  0,  0, (far+near)/(near-far),   (2*far*near)/(near-far) ),
+			vec(  0,  0, -1, 0)
 		)
 		
 		cam = rotMat(cam,vec(0,0,1), rad(env.roll))
@@ -532,6 +555,7 @@ shaders = {
 		cam = rotMat(cam,vec(0,0,1), rad(env.yaw))
 		
 		cam = translate(cam, vec(env.camPos,0))
+
 		return cam
 	end,
 	
@@ -540,11 +564,10 @@ shaders = {
 		local transform = env.transform
 		local cam = env.camera
 		local m = linalg.matrixMult
-		local s = linalg.vecSwizzle
+		--local s = linalg.vecSwizzle
 		local vec = linalg.vec
 		
-		return 
-			s(m(m(cam, transform),vec(pos,1)),"xyz")
+		return m(m(cam, transform),vec(pos,1))
 	end,
 	
 	frag = function( env )
@@ -675,7 +698,6 @@ rast.USE_DEPTH = true
 function rast.itterate( onFind )
  -----------------------------
 	local a,b,c = table.unpack( rast.state.screenVec )
-  local found = false
   
   local x, y = ITTER.x, ITTER.y
   if rast.isInTri( x+.5, y+.5, a,b,c ) then
@@ -686,7 +708,7 @@ function rast.itterate( onFind )
 		if 1 <= x and x <= WID 
 			and 1 <= y and y <= HEI then
 
-			if isDepthOk and depth > 0 then
+			if isDepthOk and depth >= -1 then
 				if rast.USE_DEPTH then
 					local cdepth = screen.depth[y][x]
 					if cdepth > depth then
@@ -757,7 +779,7 @@ function draw(tri)
 		near=.1, far=20,
 		fovW = 90,
 		fovH = 90,
-		camPos=linalg.vec(0,0,3),
+		camPos=linalg.vec(0,0,4),
 		yaw=0,pitch=0,roll=0
 	}
 	
@@ -781,6 +803,10 @@ function draw(tri)
 		local vertex = tri[i]
 		env.pos = vertex.xyz
 		tf[i] = shaders.vert( env )
+		local sw = linalg.vecSwizzle
+		local sc = linalg.scaleVec
+		local tmp = sc(tf[i], 1/sw(tf[i],"w"))
+		tf[i] = sw( tmp, "xyz" )
 	end
 	
 	log"frag"
@@ -834,6 +860,8 @@ end
 		draw(tri)
 		draw(tri2)
 		draw(tri3)
+
+		screen.drawDepth()
 -- 	end
 	
 -- end
