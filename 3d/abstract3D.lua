@@ -543,31 +543,37 @@ shaders = {
 		local fx = cot(rad(fovH/2))
 		local fy = cot(rad(fovW/2))
 
-		local cam = mat(
+		local proj = mat(
 			vec( fx,  0 ,0,0 ), 
 			vec(  0, fy, 0,0 ),
 			vec(  0,  0, (far+near)/(near-far),   (2*far*near)/(near-far) ),
 			vec(  0,  0, -1, 0)
 		)
 		
-		cam = rotMat(cam,vec(0,0,1), rad(env.roll))
-		cam = rotMat(cam,vec(0,0,1), rad(env.pitch))
-		cam = rotMat(cam,vec(0,0,1), rad(env.yaw))
-		
-		cam = translate(cam, vec(env.camPos,0))
+		local view = linalg.identity(linalg.newMatrix(4,4))
 
-		return cam
+		view = rotMat(view,vec(0,0,1), rad(env.roll))
+		view = rotMat(view,vec(0,0,1), rad(env.pitch))
+		view = rotMat(view,vec(0,0,1), rad(env.yaw))
+		
+		view = translate(view, vec( linalg.scaleVec(env.camPos,-1),0))
+
+		return proj, view
 	end,
+
+
 	
 	vert = function( env )
 		local pos = env.pos
 		local transform = env.transform
-		local cam = env.camera
+		local proj = env.projection
+		local view = env.view
 		local m = linalg.matrixMult
 		--local s = linalg.vecSwizzle
 		local vec = linalg.vec
 		
-		return m(m(cam, transform),vec(pos,1))
+		local p = m(m(view,transform), vec(pos,1))
+		return m(proj, p)
 	end,
 	
 	frag = function( env )
@@ -779,14 +785,16 @@ function draw(tri)
 		near=.1, far=20,
 		fovW = 90,
 		fovH = 90,
-		camPos=linalg.vec(0,0,4),
+		camPos=linalg.vec(0,0,2),
 		yaw=0,pitch=0,roll=0
 	}
 	
 	local cross,sub = linalg.cross, linalg.subVec
 	
-	local cam = shaders.mkCam(env)
-	env.camera= cam
+	local proj, view = shaders.mkCam(env)
+	env.projection=proj
+	env.view = view
+
 	env.transform =
 		linalg.identity(linalg.newMatrix(4,4))
 	
