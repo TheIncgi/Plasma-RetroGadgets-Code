@@ -23,8 +23,8 @@ local makeCam = [[
 	void mkCam() {
 		print("#FF00FF","HELLO WORLD");
 		camera = mat(
-			vec( cot(rad(fovWidth))/2, 0, 0, 0 ),
-			vec( 0, cot(rad(fovHeight))/2, 0, 0 ),
+			vec( cot(rad(fovWidth/2)), 0, 0, 0 ),
+			vec( 0, cot(rad(fovHeight/2)), 0, 0 ),
 			vec( 0, 0, far/(far-near), 0 ), //changed to 0, z pos
 			vec( 0, 0, far*near / (near-far), 0 )
 		);
@@ -2797,55 +2797,54 @@ function _runVert( programName, state )
 	end)
 end
 
-function _runFrag( programName )
+function _runFrag( programName, state )
+	state = state or {
+		step = "init"
+	}
 	local prgm = programs[ programName ]
 	
-	
-	local fac1 = read_var"v1" or 0
-	local fac2 = read_var"v2" or 0
-	local fac3 = read_var"v3" or 0
-	local facs = {fac1, fac2, fac3}
-	if not prgm.verts then
-		error"no verts from transfer"
-	end
-	local barPos = linalg.newVector(3)
-	local barUV = linalg.newVector(2)
-
-	for i=1,3 do
-		for f=1, 3 do
-			barPos.val[i] = barPos.val[i] + prgm.verts[i].val[i] * facs[f]
+	if state.step == "init" then
+		local fac1 = read_var"v1" or 0
+		local fac2 = read_var"v2" or 0
+		local fac3 = read_var"v3" or 0
+		if not prgm.verts then
+			error"no verts from transfer"
 		end
-	end
-	for i=1,2 do
-		for f=1, 3 do
-			barUV.val[i] = barUV.val[i] + prgm.uvs[i].val[i] * facs[f]
+		local barPos = linalg.newVector(3)
+		local barUV = linalg.newVector(2)
+		for i=1,3 do
+			barPos.val[i] = barPos.val[i] + prgm.verts[i].val[i] / 3
 		end
-	end
-	
-	enqueueJob("frag-init",function()
+		for i=1,2 do
+			barUV.val[i] = barUV.val[i] + prgm.uvs[i].val[i] / 3
+		end
 		INPUTS.vertPos = barPos
 		INPUTS.uvPos = barUV
+
+		state.step = "color"	
+		if autoYield( _runFrag,"_runFrag-init", programName, state ) then return end
+	end
+
+	if state.step == "color" then
 		prgm.RESULT = nil
-	end)
 
-	enqueueJob("frag-run",function()
 		_run(programName, prgm.main, INPUTS)
-	end)
-	
+		state.step = "result"
+		if autoYield( _runFrag,"_runFrag-color", programName, state ) then return end
+	end
 
-	enqueueJob("",function()
+	if state.step == "result" then
 		if prgm.RESULT then
-			local r = prgm.RESULT[1]
-			if not r then error("frag result with no value!") end
+			local r = prgm.RESULT
 			for i=1,4 do
 				write_var( math.min(256, math.max(0, (r.val[i] or 0) * 256)), "out"..i )
 			end
 			trigger( 8 )
 		else
-			error("frag-No result!")
+			yield( _runFrag,"_runFrag-result", programName, state )
 			return
 		end
-	end)
+	end
 end
 
 print("Shader module loaded")
