@@ -1,6 +1,7 @@
 -- Retro Gadgets
 local linalg = require"linalg"
-local controller = require"objects/lua/controller_obj"
+local Object = require"Object"
+local controller = Object:new"controller"
 local Camera = require"Camera"
 
 rast = {state={vecs={},screenVec={}}} --rasterize
@@ -328,7 +329,9 @@ local tri3 = {
 }
 
 -------------------------------------
-cam = Camera:new( 0,0,3 )
+cam = Camera:new( -.6,-.2,2 )
+controller.yaw = 180
+controller.pitch = 10
 
 function drawObjects( objects )
 	local w,h = rast.size()
@@ -338,90 +341,20 @@ function drawObjects( objects )
 	local env = {}
 	local cross,sub = linalg.cross, linalg.subVec
 	
-	local proj, view = shaders.mkCam(env)
-
+	local vec = linalg.vec
 	env.projection=proj
 	env.view = view
+	env.lightPos = vec(0,100,30)
 
+	--base transform
 	env.transform =
 		linalg.identity(linalg.newMatrix(4,4))
 	
 	for i, obj in ipairs( objects ) do
-		obj:render( env, rast )
+		obj:render( env, rast, screen )
 	end
 
-	log"calc norm"
-	env.normal =
-		cross(
-			sub(tri[2].xyz,tri[1].xyz),
-			sub(tri[3].xyz,tri[2].xyz)
-		)
-	
-	log"verts"
-	local tf = {}
-	local pointIn = false
-	for i=1,3 do
-		local vertex = tri[i]
-		env.pos = vertex.xyz
-		tf[i] = shaders.vert( env )
-		local sw = linalg.vecSwizzle
-		local sc = linalg.scaleVec
-		local w = 1/sw(tf[i],"w")
-		local abs = math.abs
-		if w <= 0 then return end
-		if not (abs(tf[i].val[1]) > 1
-		and abs(tf[i].val[2]) > 1
-		and abs(tf[i].val[3]) > 1) then 
-			pointIn = true
-		end
-		--TODO optionally include clip space coords to frag
-		local tmp = sc(tf[i], w )
-		tf[i] = sw( tmp, "xyz" )
-	end
-	if not pointIn then return end
-	
-	log"frag"
-	env.lightPos = linalg.vec(0,100,30)
-	env.color = linalg.vec(255,0,0)
 
-	rast.setVecs{ tf[1].val, tf[2].val, tf[3].val }
-	local function onPixel(bar,x,y)
-		local xyz = linalg.newVector(3)
-		local uv = linalg.newVector(2)
-			
-		for i=1,3 do --bar factor
-			--xyz
-			xyz.val[1] = xyz.val[1] + 
-					tri[i].xyz.val[1] * bar[i]
-			xyz.val[2] = xyz.val[2] + 
-					tri[i].xyz.val[2] * bar[i]
-			xyz.val[3] = xyz.val[3] + 
-					tri[i].xyz.val[3] * bar[i]
-			--uv
-			uv.val[1] = uv.val[1] + 
-					tri[i].uv.val[1] * bar[i]
-			uv.val[2] = uv.val[2] + 
-					tri[i].uv.val[2] * bar[i]
-		end
-			
-		env.vertPos = xyz
-		env.uvPos = uv
-		env.barPos = linalg._emptyVector(3)
-		env.barPos.val = bar
-
-			
-		local c = shaders.frag( env )
-		for i=1,3 do
-			c.val[i] = math.max(0,math.min(255,math.floor(c.val[i]*255)))
-		end
-		screen.setPixel(x,y, table.unpack(c.val))
-		-- c = Color( table.unpack(c.val) )
-		-- gdt.VideoChip0:SetPixel(vec2(x,y),c)
-	end
-	while rast.itterate( onPixel ) do
-		--yield()
-	end
-	screen.draw()
 end
 
 function draw(tri)
@@ -525,15 +458,17 @@ end
 -- update function is repeated every time tick
 -- function update()
 	
-local a = os.time()
 -- 	if gdt.LedButton1.ButtonDown then
-		draw(tri)
-		draw(tri2)
-		draw(tri3)
+-- draw(tri)
+-- draw(tri2)
+-- draw(tri3)
+	local a = os.clock()
+	drawObjects{ controller }
+	local b = os.clock()
 
-		screen.drawDepth()
+	screen.draw()
+	-- screen.drawDepth()
 
-local b = os.time()
 print(b-a)
 -- 	end
 	

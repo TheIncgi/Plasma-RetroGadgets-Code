@@ -51,6 +51,9 @@ end
 function linalg.vec( ... )
 	local vec = linalg._emptyVector( 0 )
 	local args = {...}
+	if type(args[1]) == "table" and not args[1].type then
+		args = args[1]
+	end
 	local n = 1
 	for i = 1, #args do
 		local v = args[i]
@@ -240,8 +243,8 @@ end
 	local a = linalg.normalize( vec )
 	a = {x=a.val[1], y=a.val[2], z=a.val[3],} --easier to read
 	a.X, a.Y, a.Z = a.x*a.x,  a.y*a.y,  a.z*a.z --^2, found on identity
-	local C = math.cos( amount.val )
-	local S = math.sin( amount.val )
+	local C = math.cos( amount )
+	local S = math.sin( amount )
 	local U = 1 - C
 	local mat = linalg._emptyMatrix( 4, 4 )
 	mat.val[1] = { U * a.X       + C,          U * a.x * a.y - S * a.z,   U * a.x * a.z + S * a.y,   0 }

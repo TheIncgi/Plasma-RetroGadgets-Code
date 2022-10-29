@@ -28,6 +28,7 @@ function Camera:new(x,y,z,yaw,pitch,roll)
     }
   }
 
+  self.__index = self
   setmetatable(obj, self)
   return obj
 end

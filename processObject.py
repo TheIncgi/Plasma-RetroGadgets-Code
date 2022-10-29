@@ -1,9 +1,9 @@
 import os
 
 def processObj( file ):
-    objFile = "3d/objects/source/%s.obj" % file
-    # mtlFile = "3d/objects/source/%s.mtl" % file
-    luaObjFile = "3d/objects/lua/%s_obj.lua" % file
+    objFile = "objects/source/%s.obj" % file
+    # mtlFile = "objects/source/%s.mtl" % file
+    luaObjFile = "objects/lua/%s_obj.lua" % file
     # luaMtlFile = "3d/luaMtl/%s.lua" % file
 
     out = open(luaObjFile, "w")
@@ -72,8 +72,8 @@ def processObj( file ):
 
         out.write("return {\n")
         for ob in model["objects"]:
-            out.write("  {\n")
             out.write("    mtllib=[[%s]],\n" % model["mtl"])
+            out.write("  {\n")
 
             out.write("    verts={\n")
             for v in ob["verts"]:
@@ -197,8 +197,8 @@ def parseMap(out, parts):
 
 
 def processMtl( file ):
-    mtlFile = "3d/objects/source/%s.mtl" % file
-    luaMtlFile = "3d/objects/lua/%s_mtl.lua" % file
+    mtlFile = "objects/source/%s.mtl" % file
+    luaMtlFile = "objects/lua/%s_mtl.lua" % file
 
     if os.path.exists( mtlFile ):
         f = open( mtlFile, "r" )
@@ -320,13 +320,13 @@ def processMtl( file ):
 
 
 all = {}
-for file in os.listdir("3d/objects/source"):
+for file in os.listdir("objects/source"):
     name = file[:-4]
     ext = file[-3:]
     print(name," ",ext)
 
-    if ext == "obj" and not os.path.exists("3d/objects/lua/%s_obj.lua" % name):
+    if ext == "obj" and not os.path.exists("objects/lua/%s_obj.lua" % name):
         processObj( name )
 
-    if ext == "mtl" and not os.path.exists("3d/objects/lua/%s_mtl.lua" % name):
+    if ext == "mtl" and not os.path.exists("objects/lua/%s_mtl.lua" % name):
         processMtl( name )
