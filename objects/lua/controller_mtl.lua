@@ -1,0 +1,42 @@
+return {
+  [ [[blue_led]] ] = {
+    specularExponent=0.000000,
+    ambientColor={1.000000,1.000000,1.000000},
+    diffuseColor={0.030737,0.026181,0.800000},
+    specularColor={0.000000,0.000000,0.000000},
+    emissive={0.000000,0.615174,0.561242},
+    ior=1.450000,
+    opacity=1.000000,
+    mode=1,
+  }, 
+  [ [[blue_plastic]] ] = {
+    specularExponent=436.421112,
+    ambientColor={1.000000,1.000000,1.000000},
+    diffuseColor={0.030737,0.026181,0.800000},
+    specularColor={0.282383,0.282383,0.282383},
+    emissive={0.000000,0.000000,0.000000},
+    ior=1.450000,
+    opacity=1.000000,
+    mode=2,
+  }, 
+  [ [[groove]] ] = {
+    specularExponent=250.000000,
+    ambientColor={1.000000,1.000000,1.000000},
+    diffuseColor={0.000515,0.000515,0.000515},
+    specularColor={0.500000,0.500000,0.500000},
+    emissive={0.000000,0.000000,0.000000},
+    ior=1.450000,
+    opacity=1.000000,
+    mode=2,
+  }, 
+  [ [[white_plastic]] ] = {
+    specularExponent=304.498108,
+    ambientColor={1.000000,1.000000,1.000000},
+    diffuseColor={0.800000,0.800000,0.800000},
+    specularColor={0.556995,0.556995,0.556995},
+    emissive={0.000000,0.000000,0.000000},
+    ior=1.450000,
+    opacity=1.000000,
+    mode=2,
+  }
+}
