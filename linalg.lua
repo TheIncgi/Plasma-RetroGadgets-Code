@@ -1,7 +1,7 @@
-linalg = {}
+local linalg = {}
 
 -- Linear Algebra Library
-swizzleIndexes = {
+local swizzleIndexes = {
 	--positional
 	x = 1,
 	y = 2,

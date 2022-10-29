@@ -1,18 +1,13 @@
 -- Retro Gadgets
 local linalg = require"linalg"
 local controller = require"objects/lua/controller_obj"
+local Camera = require"Camera"
 
 rast = {state={vecs={},screenVec={}}} --rasterize
 utils = {}
 local ITTER;
 local Texture={}
 log = _G.log or print
-
-
-
-function utils.cot( x )
-	return 1 / math.tan( x )
-end
 
 
 
@@ -74,44 +69,44 @@ screen.clear()
 
 --shader logic
 shaders = {
-	mkCam = function(env)
-		local cot = utils.cot
-		local rad = math.rad
+	-- mkCam = function(env)
+	-- 	local cot = utils.cot
+	-- 	local rad = math.rad
 			
-		local far,near = env.far,env.near
+	-- 	local far,near = env.far,env.near
 		
-		local fovW,fovH = env.fovW, env.fovH
+	-- 	local fovW,fovH = env.fovW, env.fovH
 			
-		local vec,mat = linalg.vec,linalg.mat
-		local rotMat = linalg.rotateMatrix
-		local translate = linalg.transform
+	-- 	local vec,mat = linalg.vec,linalg.mat
+	-- 	local rotMat = linalg.rotateMatrix
+	-- 	local translate = linalg.transform
 				
-		-- local cam = mat(
-		-- 	vec( cot(rad(fovW/2)), 0,0,0 ), 
-		-- 	vec( 0, cot(rad(fovH/2)),0,0 ),
-		-- 	vec( 0,0,-far/(far-near),   0 ),
-		-- 	vec( 0,0,far*near/(near-far), 0)
-		-- )
-		local fx = cot(rad(fovH/2))
-		local fy = cot(rad(fovW/2))
+	-- 	-- local cam = mat(
+	-- 	-- 	vec( cot(rad(fovW/2)), 0,0,0 ), 
+	-- 	-- 	vec( 0, cot(rad(fovH/2)),0,0 ),
+	-- 	-- 	vec( 0,0,-far/(far-near),   0 ),
+	-- 	-- 	vec( 0,0,far*near/(near-far), 0)
+	-- 	-- )
+	-- 	local fx = cot(rad(fovH/2))
+	-- 	local fy = cot(rad(fovW/2))
 
-		local proj = mat(
-			vec( fx,  0 ,0,0 ), 
-			vec(  0, fy, 0,0 ),
-			vec(  0,  0, (far+near)/(near-far),   (2*far*near)/(near-far) ),
-			vec(  0,  0, -1, 0)
-		)
+	-- 	local proj = mat(
+	-- 		vec( fx,  0 ,0,0 ), 
+	-- 		vec(  0, fy, 0,0 ),
+	-- 		vec(  0,  0, (far+near)/(near-far),   (2*far*near)/(near-far) ),
+	-- 		vec(  0,  0, -1, 0)
+	-- 	)
 		
-		local view = linalg.identity(linalg.newMatrix(4,4))
+	-- 	local view = linalg.identity(linalg.newMatrix(4,4))
 
-		view = rotMat(view,vec(0,0,1), rad(env.roll))
-		view = rotMat(view,vec(0,0,1), rad(env.pitch))
-		view = rotMat(view,vec(0,0,1), rad(env.yaw))
+	-- 	view = rotMat(view,vec(0,0,1), rad(env.roll))
+	-- 	view = rotMat(view,vec(0,0,1), rad(env.pitch))
+	-- 	view = rotMat(view,vec(0,0,1), rad(env.yaw))
 		
-		view = translate(view, vec( linalg.scaleVec(env.camPos,-1),0))
+	-- 	view = translate(view, vec( linalg.scaleVec(env.camPos,-1),0))
 
-		return proj, view
-	end,
+	-- 	return proj, view
+	-- end,
 
 
 	
@@ -332,6 +327,103 @@ local tri3 = {
 	}
 }
 
+-------------------------------------
+cam = Camera:new( 0,0,3 )
+
+function drawObjects( objects )
+	local w,h = rast.size()
+	cam:setFov( 90, w, h )
+	local proj, view = cam:createMatrix()
+
+	local env = {}
+	local cross,sub = linalg.cross, linalg.subVec
+	
+	local proj, view = shaders.mkCam(env)
+
+	env.projection=proj
+	env.view = view
+
+	env.transform =
+		linalg.identity(linalg.newMatrix(4,4))
+	
+	for i, obj in ipairs( objects ) do
+		obj:render( env, rast )
+	end
+
+	log"calc norm"
+	env.normal =
+		cross(
+			sub(tri[2].xyz,tri[1].xyz),
+			sub(tri[3].xyz,tri[2].xyz)
+		)
+	
+	log"verts"
+	local tf = {}
+	local pointIn = false
+	for i=1,3 do
+		local vertex = tri[i]
+		env.pos = vertex.xyz
+		tf[i] = shaders.vert( env )
+		local sw = linalg.vecSwizzle
+		local sc = linalg.scaleVec
+		local w = 1/sw(tf[i],"w")
+		local abs = math.abs
+		if w <= 0 then return end
+		if not (abs(tf[i].val[1]) > 1
+		and abs(tf[i].val[2]) > 1
+		and abs(tf[i].val[3]) > 1) then 
+			pointIn = true
+		end
+		--TODO optionally include clip space coords to frag
+		local tmp = sc(tf[i], w )
+		tf[i] = sw( tmp, "xyz" )
+	end
+	if not pointIn then return end
+	
+	log"frag"
+	env.lightPos = linalg.vec(0,100,30)
+	env.color = linalg.vec(255,0,0)
+
+	rast.setVecs{ tf[1].val, tf[2].val, tf[3].val }
+	local function onPixel(bar,x,y)
+		local xyz = linalg.newVector(3)
+		local uv = linalg.newVector(2)
+			
+		for i=1,3 do --bar factor
+			--xyz
+			xyz.val[1] = xyz.val[1] + 
+					tri[i].xyz.val[1] * bar[i]
+			xyz.val[2] = xyz.val[2] + 
+					tri[i].xyz.val[2] * bar[i]
+			xyz.val[3] = xyz.val[3] + 
+					tri[i].xyz.val[3] * bar[i]
+			--uv
+			uv.val[1] = uv.val[1] + 
+					tri[i].uv.val[1] * bar[i]
+			uv.val[2] = uv.val[2] + 
+					tri[i].uv.val[2] * bar[i]
+		end
+			
+		env.vertPos = xyz
+		env.uvPos = uv
+		env.barPos = linalg._emptyVector(3)
+		env.barPos.val = bar
+
+			
+		local c = shaders.frag( env )
+		for i=1,3 do
+			c.val[i] = math.max(0,math.min(255,math.floor(c.val[i]*255)))
+		end
+		screen.setPixel(x,y, table.unpack(c.val))
+		-- c = Color( table.unpack(c.val) )
+		-- gdt.VideoChip0:SetPixel(vec2(x,y),c)
+	end
+	while rast.itterate( onPixel ) do
+		--yield()
+	end
+	screen.draw()
+end
+
 function draw(tri)
 	local w,h = rast.size()
 	local aspect = h/w
@@ -433,12 +525,16 @@ end
 -- update function is repeated every time tick
 -- function update()
 	
+local a = os.time()
 -- 	if gdt.LedButton1.ButtonDown then
 		draw(tri)
 		draw(tri2)
 		draw(tri3)
 
 		screen.drawDepth()
+
+local b = os.time()
+print(b-a)
 -- 	end
 	
 -- end
