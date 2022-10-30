@@ -3,6 +3,7 @@ abstract3D is main
 Also contains rasterization code
 
 ## Render steps:
+```
 For each part in an `.obj` (can be multiple objects in one .obj)
 -> For each Material
   -> For each face (triangles only)
@@ -14,7 +15,7 @@ For each part in an `.obj` (can be multiple objects in one .obj)
           -> interpolate untransformed xyz, uv, normals using bary coords
           -> feed into fragment shader for color
           -> put pixel in buffer
-        
+```        
 
 
 # Creating object/material data
