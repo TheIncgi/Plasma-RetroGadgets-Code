@@ -1,4 +1,6 @@
 import os
+from PIL import Image
+from struct import pack
 
 def processObj( file ):
     objFile = "objects/source/%s.obj" % file
@@ -191,7 +193,7 @@ def parseMap(out, parts):
                 i = i+1
 
         else:
-            out.write("      file=[[%s]],\n" % p)
+            out.write("      file=[[%s]],\n" % os.path.basename( p )[:-4]+".btx")
             i = i+1
     out.write("}")
 
@@ -305,7 +307,8 @@ def processMtl( file ):
 
             elif cmd.startswith("map_"):
                 cmd = cmd[4:]
-                out.write("    %s=" % names[name])
+                info = names[cmd]
+                out.write("    %sMap=" % info["name"])
                 parseMap( out,parts )
                 out.write(",\n")
                 
@@ -317,6 +320,19 @@ def processMtl( file ):
         out.close()
         f.close()
     
+def simplifyTexture( file ):
+    img = Image.open("textures/"+file)
+    img = img.convert("RGBA")
+    out = open("textures/%s.btx" % file[:-4], "wb")
+    out.write( pack(">II", img.width, img.height) )
+
+    for y in range( 0, img.height ):
+        for x in range( 0, img.width ):
+            r,g,b,a = img.getpixel((0,0))
+            out.write( pack("BBBB", a,r,g,b) )
+
+    out.close()
+
 
 
 all = {}
@@ -330,3 +346,13 @@ for file in os.listdir("objects/source"):
 
     if ext == "mtl" and not os.path.exists("objects/lua/%s_mtl.lua" % name):
         processMtl( name )
+
+
+for file in os.listdir("textures"):
+    name = file[:-4]
+    ext = file[-3:]
+    if ext == "btx":
+        continue
+    print(name," ",ext)
+    simplifyTexture( file )
+    

@@ -2,7 +2,9 @@
 local linalg = require"linalg"
 local Object = require"Object"
 local controller = Object:new"controller"
+local texCube = Object:new"texCube"
 local Camera = require"Camera"
+local Bitmap = require"bmp"
 
 rast = {state={vecs={},screenVec={}}} --rasterize
 utils = {}
@@ -16,9 +18,10 @@ log = _G.log or print
 local screen = {
   buffer = {},
 	depth = {},
-  WIDTH = 128,
-  HEIGHT = 32
+  WIDTH = 512,
+  HEIGHT = 512,
 }
+screen.bmp = Bitmap:new(screen.WIDTH, screen.HEIGHT)
 
 local ESC = string.char(27)
 local block = string.char(219)
@@ -42,6 +45,7 @@ end
 
 function screen.setPixel(x,y, r,g,b)
   screen.buffer[y][x] = screen.pixel(r,g,b)
+  screen.bmp:setPixel(x,y, {r=r,g=g,b=b})
 end
 
 function screen.draw()
@@ -332,10 +336,12 @@ local tri3 = {
 cam = Camera:new( -.6,-.2,2 )
 controller.yaw = 180
 controller.pitch = 10
+texCube.x = 1.5
+texCube.z = 2
 
 function drawObjects( objects )
 	local w,h = rast.size()
-	cam:setFov( 90, w, h )
+	cam:setFov( 45, w, h )
 	local proj, view = cam:createMatrix()
 
 	local env = {}
@@ -463,10 +469,11 @@ end
 -- draw(tri2)
 -- draw(tri3)
 	local a = os.clock()
-	drawObjects{ controller }
+	drawObjects{ controller, texCube }
 	local b = os.clock()
 
-	screen.draw()
+	-- screen.draw()
+	screen.bmp:save("render2.bmp")
 	-- screen.drawDepth()
 
 print(b-a)
