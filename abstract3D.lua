@@ -338,6 +338,8 @@ controller.yaw = 180
 controller.pitch = 10
 texCube.x = 1.5
 texCube.z = 2
+texCube.pitch = 160
+texCube.roll = 70
 
 function drawObjects( objects )
 	local w,h = rast.size()
@@ -469,7 +471,10 @@ end
 -- draw(tri2)
 -- draw(tri3)
 	local a = os.clock()
-	drawObjects{ controller, texCube }
+	drawObjects{ 
+		controller, 
+		texCube 
+	}
 	local b = os.clock()
 
 	-- screen.draw()
@@ -477,6 +482,7 @@ end
 	-- screen.drawDepth()
 
 print(b-a)
+-- screen.draw()
 -- 	end
 	
 -- end

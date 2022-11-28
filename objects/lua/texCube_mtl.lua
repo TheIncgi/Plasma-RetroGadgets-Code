@@ -9,10 +9,10 @@ return {
     opacity=1.000000,
     mode=3,
     diffuseColorMap={
-      file=[[Untitled.001.png]],
-},
+      file=[[grid.png]],
+    },
     emissiveMap={
       file=[[Untitled.001.png]],
-},
+    },
   }
 }

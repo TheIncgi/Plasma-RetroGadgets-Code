@@ -1,6 +1,14 @@
 local Object = {}
 local Material = require("Material")
 local linalg = require"linalg"
+local BTX = require"BTX"
+
+Object.colorProperties = {
+  ["ambientColor"] = true,
+  ["diffuseColor"] = true,
+  ["specularColor"] = true,
+  ["emissive"] = true,
+}
 
 function Object:new( name )
   local obj = {}
@@ -58,6 +66,37 @@ function Object:vertShader( env )
   return m(proj, p)
 end
 
+function Object:_loadTexMap( mtl, propName )
+  local prop = mtl[ propName ]
+  if prop.btx then return end
+  local fileName = prop.file:sub(1, -5) .. ".btx"
+
+  prop.btx = BTX:load( "textures/"..fileName, Object.colorProperties[ propName ], false )
+end
+
+function Object:_sampleNearest( mtl, propName, uv )
+  local vec = linalg.vec
+  local mapName = propName .. "Map"
+  if mtl[ mapName ] then
+    self:_loadTexMap( mtl, mapName )
+    local btx = mtl[ mapName ].btx
+    return vec(btx:sampleNearest( uv.val[1] * (btx.width-1)+1, uv.val[2] * (btx.height-1)+1 ))
+  else
+    return vec(mtl[ propName ])
+  end
+end
+
+function Object:_sampleLinear( mtl, propName, uv )
+  local vec = linalg.vec
+  local mapName = propName .. "Map"
+  if mtl[ mapName ] then
+    self:_loadTexMap( mtl, mapName )
+    return vec(mtl[ mapName ].btx:sampleLinear( uv.val[1], uv.val[2] ))
+  else
+    return vec(mtl[ propName ])
+  end
+end
+
 function Object:fragShader( env )
   local subv = linalg.subVec
   local addv = linalg.addVec
@@ -66,17 +105,35 @@ function Object:fragShader( env )
   local barPos = env.barPos
   local mtl = env.mtl
   local vec = linalg.vec
+  local uv = env.uvPos
+  local modelView = env.transform
+  local multM = linalg.matrixMult
+  local vertPos = env.vertPos
+  local s = linalg.vecSwizzle
+
+  local worldPos = s(vec( multM( modelView , vec(vertPos, 1.0))),"xyz")
+	local worldNormal = s(linalg.normalize(
+                        vec( 
+                          multM( 
+                            modelView,
+                             vec(env.normal, 0.0))
+                        )
+                     ),"xyz")
+	-- local cameraNormal = linalg.subVec( cameraPos, worldPos);
 
   local lightVec = subv( 
     env.lightPos,
-    env.vertPos
+    worldPos
   )
+
   local factor = math.abs(
-    dot(env.normal,lightVec)
+    dot(worldNormal, lightVec)
   )
   factor = math.min(1,factor + .1)
-  local clr = mtl.diffuseColor and vec(mtl.diffuseColor) or barPos
+  
+  local clr = self:_sampleNearest( mtl, "diffuseColor", uv ) --mtl.diffuseColor and vec(mtl.diffuseColor) or barPos
   -- local clr = linalg.vec( env.uvPos, 1 )
+  -- local clr = barPos
   --env.color
   return scale(clr, factor)
 end
@@ -118,7 +175,7 @@ function Object:_onPixel(args)
   for i=1,3 do
     c.val[i] = math.max(0,math.min(255,math.floor(c.val[i]*255)))
   end
-  screen.setPixel(px,py, unpack(c.val))
+  screen.setPixel(px,py, unpack(c.val, 1, 3))
 end
 
 --face group

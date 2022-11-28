@@ -17,18 +17,26 @@ function BTX:load( fileName, isColor, diskMode )
     diskMode = diskMode,
     isColor = isColor
   }
+  self.__index = self
+  setmetatable( obj, self )
 
-  obj.file = io.open( fileName, "r" )
+  obj.file = io.open( fileName, "rb" )
   obj:_loadSize()
 
   if not diskMode then
-    obj.data = obj.file:read"*all"
+    local eof = obj.file:seek"end"
+    obj.file:seek("set", 0)
+    --local data = {}
+    --repeat
+    --  local chunk = obj.file:read(1024, "*line")
+    --  table.insert(data, chunk)
+    --until not chunk or #chunk == 0
+    -- obj.data = table.concat( data )
+    obj.data = obj.file:read("*all"):sub(9)
     obj.file:close()
     obj.file = nil
   end
 
-  self.__index = self
-  setmetatable( obj, self )
   return obj
 end
 
@@ -41,25 +49,26 @@ local function toInt( bytes )
 end
 
 function BTX:_getBytes( start, n )
+  n = n or 1
   if self.data then 
-    return self.data:byte( n )
+    return self.data:byte( start, start + n - 1 )
   else
-    self.file:seek( start + 8 )
-    return self.file:read( n or 1, "*line" ):byte( 1, n or 1 )
+    self.file:seek( "set", start + 8 - 1 )
+    return self.file:read( n, "*line" ):byte( 1, n )
   end
 end
 
 function BTX:_loadSize()
-  self.width = toInt{ self:_getBytes(1, 4) }
-  self.height = toInt{ self:_getBytes(5, 4) }
+  self.width = toInt{ self:_getBytes(1 - 8, 4) }
+  self.height = toInt{ self:_getBytes(5 - 8, 4) }
 end
 
 --argb, 255 color space
 function BTX:getPixel( x, y )
   local index = (y-1) * self.width + x
-  local offset = 8 + index * 4
+  local offset = 1 + index * 4
 
-  return BTX:_getBytes( offset, 4 )
+  return self:_getBytes( offset, 4 )
 end
 
 function BTX:sampleNearest( x, y )
@@ -68,7 +77,7 @@ function BTX:sampleNearest( x, y )
   x = math.max( 1, math.min( self.width, x ) )
   y = math.max( 1, math.min( self.height, y ) )
   local A,R,G,B = self:getPixel( x, y )
-  return A/255, R/255, G/255, B/255
+  return R/255, G/255, B/255, A/255
 end
 
 function BTX:_blend( f, a, b )

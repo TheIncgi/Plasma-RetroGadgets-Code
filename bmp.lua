@@ -47,6 +47,7 @@ local function toBytes( value, bytes )
     v = 0xFF & ( value >> (i-1)*8)
     out = out..string.char(v)
   end
+  if #out > bytes then error("Value out of bounds") end
   return out
 end
 
@@ -87,7 +88,7 @@ function Bitmap:_genHeader()
   local rowLen = self.width * self.channels
   rowLen = rowLen + (4 - rowLen % 4)
   local pixelBytes = rowLen * self.height
-  local start = self:_genHeaderStart(54 + pixelBytes, 54)
+  local start = self:_genHeaderStart(54 + pixelBytes, 55-15) ---15, idk, but it works
   return start..table.concat( data )
 end
 
@@ -99,9 +100,9 @@ function Bitmap:serializeImg()
     for x = 1, self.width do
       local p = self:getPixel( x, y )
       --little endian, smallest first
-      out[ n     ] = toBytes( p.r, 1 )
+      out[ n     ] = toBytes( p.b, 1 )
       out[ n + 1 ] = toBytes( p.g, 1 )
-      out[ n + 2 ] = toBytes( p.b, 1 )
+      out[ n + 2 ] = toBytes( p.r, 1 )
 
       n = n+3
     end
@@ -110,7 +111,7 @@ function Bitmap:serializeImg()
 end
 
 function Bitmap:save( name )
-  file = io.open( name, "w+" )
+  file = io.open( name, "w+b" )
   file:write( self:serializeImg() )
   file:close()
 end

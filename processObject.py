@@ -321,15 +321,18 @@ def processMtl( file ):
         f.close()
     
 def simplifyTexture( file ):
+    if os.path.exists("textures/%s.btx" % file[:-4]):
+        return
     img = Image.open("textures/"+file)
     img = img.convert("RGBA")
     out = open("textures/%s.btx" % file[:-4], "wb")
     out.write( pack(">II", img.width, img.height) )
-
+    
     for y in range( 0, img.height ):
         for x in range( 0, img.width ):
-            r,g,b,a = img.getpixel((0,0))
+            r,g,b,a = img.getpixel((x, y))
             out.write( pack("BBBB", a,r,g,b) )
+    print("BYTES: "+ str(out.tell()))
 
     out.close()
 
